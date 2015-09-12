@@ -1,0 +1,72 @@
+Follow the instructions to setup the ABI Tracker for your library:
+
+1) Please look at the README of the ABI Tracker and ABI Monitor tools:
+  
+  https://github.com/lvc/abi-tracker
+  https://github.com/lvc/abi-monitor
+
+2) You need to install basic packages to the system:
+  
+  elfutils
+  libelf-devel
+  ctags
+  wdiff
+  wget
+  git
+  rfcdiff (https://tools.ietf.org/tools/rfcdiff/)
+  
+3) You need to install these tools to the system:
+
+  abi-tracker
+  abi-monitor
+  abi-dumper
+  abi-compliance-checker
+  pkgdiff
+  vtable-dumper
+  
+You can use the installer for that: https://github.com/lvc/installer/releases
+
+Just extract the package of installer and execute:
+  
+  sudo make install prefix=/usr target=abi-tracker
+
+All packages will be downloaded from the github.com/lvc and installed to the "/usr" directory.
+
+To uninstall:
+  
+  sudo make uninstall prefix=/usr target=abi-tracker
+
+4) Please install also necessary tools to build your library:
+
+  automake
+  cmake
+  gcc
+  g++
+  ...
+
+5) Create initial profile for your library (PROFILE.json):
+
+{
+  "Name":       "SHORT LIBRARY NAME",
+  "SourceUrl":  "URL TO DOWNLOAD PACKAGES",
+  "Git":        "GIT ADDRESS TO CLONE"
+}
+ 
+6) Download and build latest packages of your library:
+
+  abi-monitor -get PROFILE.json
+  abi-monitor -build --limit=10 PROFILE.json
+
+7) Create analysis reports:
+  
+  abi-tracker -build PROFILE.json
+
+8) Rebuild some reports if needed:
+
+  abi-tracker -rebuild -target abireport -v X.Y.Z PROFILE.json
+
+9) The home page of the report will be generated to:
+
+  timeline/<LIBRARY NAME>/index.html
+
+Enjoy!

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.0
+# ABI Tracker 1.1
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
@@ -43,7 +43,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.0";
+my $TOOL_VERSION = "1.1";
 my $DB_PATH = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -465,7 +465,9 @@ sub buildData()
     
     if(defined $Profile->{"Versions"}{"current"})
     { # save pull/update time of the code repository
-        $DB->{"ScmUpdateTime"} = getScmUpdateTime();
+        if(my $UTime = getScmUpdateTime()) {
+            $DB->{"ScmUpdateTime"} = $UTime;
+        }
     }
 }
 
@@ -525,15 +527,15 @@ sub detectSoname($)
     
     foreach my $Path (@Objects)
     {
-        if(skipLib($Path)) {
+        my $RPath = $Path;
+        $RPath=~s/\A\Q$Installed\E\/*//;
+        
+        if(skipLib($RPath)) {
             next;
         }
         
         if(readBytes($Path) eq "7f454c46")
         {
-            my $RPath = $Path;
-            $RPath=~s/\A\Q$Installed\E\/*//;
-            
             if(my $Soname = getSoname($Path))
             {
                 $DB->{"Soname"}{$V}{$RPath} = $Soname;
@@ -550,10 +552,14 @@ sub detectSoname($)
     
     my $Sover = "None";
     
-    if(my @S = keys(%Sovers))
+    if(my @S = sort keys(%Sovers))
     {
         if($#S==0) {
             $Sover = $S[0];
+        }
+        else
+        {
+            $Sover = join("/", @S);
         }
     }
     
@@ -562,19 +568,38 @@ sub detectSoname($)
 
 sub skipLib($)
 {
-    my $Name = $_[0];
+    my $Path = $_[0];
     
     if(defined $Profile->{"SkipObjects"})
     {
-        $Name = getFilename($Name);
-        $Name=~s/\..+\Z//g;
+        my $Name = getFilename($Path);
+        my @Skip = @{$Profile->{"SkipObjects"}};
         
-        foreach my $L (@{$Profile->{"SkipObjects"}})
+        foreach my $L (@Skip)
         {
-            $L=~s/\..+\Z//g;
-            if($L eq $Name)
-            {
-                return 1;
+            if($L=~/\/\Z/)
+            { # directory
+                if($Path=~/\Q$L\E/) {
+                    return 1;
+                }
+            }
+            else
+            { # file
+                if($L=~s/\*/\.*/)
+                { # pattern
+                    if($Name=~/\A$L\Z/) {
+                        return 1;
+                    }
+                }
+                else
+                { # short name
+                    $Name=~s/\..+\Z//g;
+                    $L=~s/\..+\Z//g;
+                    
+                    if($L eq $Name) {
+                        return 1;
+                    }
+                }
             }
         }
     }
@@ -588,7 +613,16 @@ sub getSover($)
     
     my @V = ();
     
-    if($Name=~/([\d\.])\.so\./) {
+    if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so\./)
+    { # libMagickCore6-Q16.so.1
+        push(@V, $1);
+    }
+    elsif($Name=~/\-([a-zA-Z]?\d[\w\.\-]*)\.so\./)
+    { # libMagickCore-6.Q16.so.1
+      # libMagickCore-Q16.so.7
+        push(@V, $1);
+    }
+    elsif($Name=~/([\d\.])\.so\./) {
         push(@V, $1);
     }
     
@@ -625,9 +659,12 @@ sub updateRequired($)
     {
         if($DB->{"ScmUpdateTime"})
         {
-            if($DB->{"ScmUpdateTime"} ne getScmUpdateTime())
+            if(my $UTime = getScmUpdateTime())
             {
-                return 1;
+                if($DB->{"ScmUpdateTime"} ne $UTime)
+                {
+                    return 1;
+                }
             }
         }
     }
@@ -639,10 +676,13 @@ sub createChangelog($)
 {
     my $V = $_[0];
     
-    if(defined $Profile->{"Versions"}{$V}{"Changelog"}
-    and $Profile->{"Versions"}{$V}{"Changelog"} eq "Off")
+    if(defined $Profile->{"Versions"}{$V}{"Changelog"})
     {
-        return 0;
+        if($Profile->{"Versions"}{$V}{"Changelog"} eq "Off"
+        or index($Profile->{"Versions"}{$V}{"Changelog"}, "://")!=-1)
+        {
+            return 0;
+        }
     }
     
     if(not $Rebuild)
@@ -650,7 +690,7 @@ sub createChangelog($)
         if(defined $DB->{"Changelog"}{$V})
         {
             if(not updateRequired($V)) {
-                return;
+                return 0;
             }
         }
     }
@@ -659,6 +699,12 @@ sub createChangelog($)
     
     my $Source = $Profile->{"Versions"}{$V}{"Source"};
     my $ChangelogPath = undef;
+    
+    if(not -e $Source)
+    {
+        printMsg("ERROR", "Can't access \'$Source\'");
+        return 0;
+    }
     
     my $TmpDir = $TMP_DIR."/log/";
     mkpath($TmpDir);
@@ -744,13 +790,20 @@ sub toHtml($$)
     my ($V, $Path) = @_;
     my $Content = readFile($Path);
     
-    $Content = htmlSpecChars($Content);
+    my $LIM = 500000;
+    if(length($Content)>$LIM)
+    {
+        $Content = substr($Content, 0, $LIM);
+        $Content .= "\n...";
+    }
+    
+    $Content = htmlSpecChars($Content, 1);
     
     my $Title = showTitle()." ".$V.": changelog";
     my $Keywords = showTitle().", $V, changes, changelog";
     my $Desc = "Log of changes in the package";
     
-    $Content = "<div class='changelog'>\n$Content\n</div>\n";
+    $Content = "\n<div class='changelog'>\n<pre class='wrap'>$Content</pre></div>\n";
     
     my $Note = "";
     
@@ -762,7 +815,7 @@ sub toHtml($$)
         }
     }
     
-    $Content = "<h1>Changelog for <span class='version'>$V</span> version$Note</h1><br/><br/>\n".$Content;
+    $Content = "<h1>Changelog for <span class='version'>$V</span> version$Note</h1><br/><br/>".$Content;
     $Content = getHead("changelog").$Content;
     
     $Content = composeHTML_Head($Title, $Keywords, $Desc, getTop("changelog"), "changelog.css", "")."\n<body>\n$Content\n</body>\n</html>\n";
@@ -770,18 +823,28 @@ sub toHtml($$)
     return $Content;
 }
 
-sub htmlSpecChars($)
+sub htmlSpecChars(@)
 {
-    my $S = $_[0];
+    my $S = shift(@_);
+    
+    my $Sp = 0;
+    
+    if(@_) {
+        $Sp = shift(@_);
+    }
     
     $S=~s/\&([^#])/&amp;$1/g;
     $S=~s/</&lt;/g;
     $S=~s/>/&gt;/g;
-    $S=~s/([^ ]) ([^ ])/$1\@SP\@$2/g;
-    $S=~s/([^ ]) ([^ ])/$1\@SP\@$2/g;
-    $S=~s/ /&nbsp;/g;
-    $S=~s/\@SP\@/ /g;
-    $S=~s/\n/\n<br\/>/g;
+    
+    if(not $Sp)
+    {
+        $S=~s/([^ ]) ([^ ])/$1\@SP\@$2/g;
+        $S=~s/([^ ]) ([^ ])/$1\@SP\@$2/g;
+        $S=~s/ /&nbsp;/g;
+        $S=~s/\@SP\@/ /g;
+        $S=~s/\n/\n<br\/>/g;
+    }
     
     return $S;
 }
@@ -806,6 +869,10 @@ sub getScmUpdateTime()
 {
     if(my $Source = $Profile->{"Versions"}{"current"}{"Source"})
     {
+        if(not -d $Source) {
+            return undef;
+        }
+        
         my $Time = undef;
         if(defined $Profile->{"Git"})
         {
@@ -958,14 +1025,14 @@ sub createABIDump($)
         rmtree($Dir);
     }
     
-    foreach my $Object (sort @Objects)
+    foreach my $Object (sort {lc($a) cmp lc($b)} @Objects)
     {
-        if(skipLib($Object)) {
-            next;
-        }
-        
         my $RPath = $Object;
         $RPath=~s/\A\Q$Installed\E\/*//;
+        
+        if(skipLib($RPath)) {
+            next;
+        }
         
         printMsg("INFO", "Creating ABI dump for $RPath");
         
@@ -1025,7 +1092,13 @@ sub getObjectName($$)
     }
     elsif($T eq "SuperShort")
     {
-        if($Object=~/\A(.+?)[\d\.\-\_]*\.so[\d\.]*\Z/) {
+        if($Object=~/\A(.+?)(\d+[\d\.]*\-[\w\.\-]*)\.so\./) {
+            return $1;
+        }
+        elsif($Object=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so\./) {
+            return $1;
+        }
+        elsif($Object=~/\A(.+?)[\d\.\-\_]*\.so[\d\.]*\Z/) {
             return $1;
         }
     }
@@ -1043,7 +1116,7 @@ sub createABIView($)
     my $V = $_[0];
     
     if($Profile->{"Versions"}{$V}{"ABIView"} ne "On"
-    and not defined $TargetVersion) {
+    and not (defined $TargetVersion and defined $TargetElement)) {
         return 0;
     }
     
@@ -1090,7 +1163,12 @@ sub createABIView($)
     
     @Objects = sort {lc($a) cmp lc($b)} @Objects;
     
-    foreach my $Object (@Objects) {
+    foreach my $Object (@Objects)
+    {
+        if(skipLib($Object)) {
+            next;
+        }
+        
         createABIView_Object($V, $Object);
     }
     
@@ -1109,8 +1187,15 @@ sub createABIView($)
     
     foreach my $Object (@Objects)
     {
+        if(skipLib($Object)) {
+            next;
+        }
+        
+        my $Name = $Object;
+        $Name=~s/\Alib\///;
+        
         $Report .= "<tr>\n";
-        $Report .= "<td class='object'>$Object</td>\n";
+        $Report .= "<td class='object'>$Name</td>\n";
         
         my $Md5 = getMd5($Object);
         if(defined $DB->{"ABIView_D"}{$V}{$Md5})
@@ -1219,6 +1304,7 @@ sub createABIReport($$)
     
     my (%Added, %Removed, %Mapped, %Mapped_R, %ChangedSoname, %RenamedObject) = ();
     
+    # Match objects
     foreach my $Object1 (@Objects1)
     {
         my $Object2 = undef;
@@ -1320,7 +1406,7 @@ sub createABIReport($$)
     {
         my $Object2 = $Mapped{$Object1};
         
-        my ($Soname1, $Soname2) = ();
+        my ($Soname1, $Soname2) = ($Object1, $Object2);
         
         if(defined $DB->{"Soname"}{$V1}
         and defined $DB->{"Soname"}{$V1}{$Object1}
@@ -1369,6 +1455,19 @@ sub createABIReport($$)
     $Report .= "<th>Removed<br/>Symbols</th>\n";
     $Report .= "</tr>\n";
     
+    foreach my $Object2 (@Objects2)
+    {
+        my $Name = $Object2;
+        $Name=~s/\Alib\///;
+        
+        if(defined $Added{$Object2})
+        {
+            $Report .= "<tr>\n";
+            $Report .= "<td class='object'>$Name</td>\n";
+            $Report .= "<td colspan='3' class='added'>Added to package</td>\n";
+            $Report .= "</tr>\n";
+        }
+    }
     foreach my $Object1 (@Objects1)
     {
         if(skipLib($Object1)) {
@@ -1461,10 +1560,6 @@ sub createABIReport($$)
                 }
             }
         }
-        elsif(defined $Added{$Object1})
-        {
-            $Report .= "<td colspan='3' class='added'>Added to package</td>\n";
-        }
         elsif(defined $Removed{$Object1})
         {
             $Report .= "<td colspan='3' class='removed'>Removed from package</td>\n";
@@ -1517,6 +1612,10 @@ sub createABIReport($$)
         $BC -= $Affected_T/$TotalFuncs;
     }
     
+    if(my $Rm = keys(%Removed) and $#Objects1>=0) {
+        $BC *= (1-$Rm/($#Objects1+1));
+    }
+    
     $BC = formatNum($BC);
     
     $DB->{"ABIReport"}{$V1}{$V2}{"Path"} = $Output;
@@ -1528,6 +1627,7 @@ sub createABIReport($$)
     $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsAdded"} = keys(%Added);
     $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsRemoved"} = keys(%Removed);
     $DB->{"ABIReport"}{$V1}{$V2}{"ChangedSoname"} = keys(%ChangedSoname);
+    $DB->{"ABIReport"}{$V1}{$V2}{"TotalObjects"} = $#Objects1 + 1;
     
     my @Meta = ();
     
@@ -1537,6 +1637,7 @@ sub createABIReport($$)
     push(@Meta, "\"ObjectsAdded\": ".keys(%Added));
     push(@Meta, "\"ObjectsRemoved\": ".keys(%Removed));
     push(@Meta, "\"ChangedSoname\": ".keys(%ChangedSoname));
+    push(@Meta, "\"TotalObjects\": ".($#Objects1 + 1));
     
     writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
 }
@@ -1588,7 +1689,7 @@ sub createABIView_Object($$)
     $Dir .= "/".$Md5;
     my $Output = $Dir."/symbols.html";
     
-    my $Cmd = $ABI_VIEWER." -skip-std -output \"$Dir\" \"".getDirname($Dump)."\"";
+    my $Cmd = $ABI_VIEWER." -skip-std -vnum \"$V\" -output \"$Dir\" \"".getDirname($Dump)."\"";
     
     if(my $ListPath = $Profile->{"Versions"}{$V}{"PublicSymbols"}) {
         $Cmd .= " -symbols-list \"$ListPath\"";
@@ -1754,6 +1855,10 @@ sub compareABIs($$$$)
         $Cmd .= $PCmd;
     }
     
+    if(my $SkipSymbols = $Profile->{"SkipSymbols"}) {
+        $Cmd .= " -skip-symbols \"$SkipSymbols\"";
+    }
+    
     my $Log = `$Cmd`; # execute
     
     my ($Affected, $Added, $Removed) = ();
@@ -1804,7 +1909,7 @@ sub createPkgdiff($$)
     my ($V1, $V2) = @_;
     
     if($Profile->{"Versions"}{$V2}{"PkgDiff"} ne "On"
-    and not defined $TargetVersion) {
+    and not (defined $TargetVersion and defined $TargetElement)) {
         return 0;
     }
     
@@ -1842,7 +1947,7 @@ sub diffHeaders($$)
     my ($V1, $V2) = @_;
     
     if($Profile->{"Versions"}{$V2}{"HeadersDiff"} ne "On"
-    and not defined $TargetVersion) {
+    and not (defined $TargetVersion and defined $TargetElement)) {
         return 0;
     }
     
@@ -2097,8 +2202,8 @@ sub createTimeline()
     writeFile("css/headers_diff.css", readModule("Styles", "HeadersDiff.css"));
     writeFile("css/changelog.css", readModule("Styles", "Changelog.css"));
     
-    my $Title = showTitle().": ABI/ABI changes timeline";
-    my $Desc = "ABI/API compatibility analysis reports for ".$TARGET_LIB;
+    my $Title = showTitle().": API/ABI changes timeline";
+    my $Desc = "API/ABI compatibility analysis reports for ".$TARGET_LIB;
     my $Content = composeHTML_Head($Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, getTop("timeline"), "report.css", "");
     $Content .= "<body>\n";
     
@@ -2224,9 +2329,13 @@ sub createTimeline()
         $Content .= "<td>".$Sover."</td>\n";
         
         my $Changelog = $DB->{"Changelog"}{$V};
+        
         if($Changelog and $Changelog ne "Off"
         and $Profile->{"Versions"}{$V}{"Changelog"} ne "Off") {
             $Content .= "<td><a href=\'../../".$Changelog."\'>changelog</a></td>\n";
+        }
+        elsif(index($Profile->{"Versions"}{$V}{"Changelog"}, "://")!=-1) {
+            $Content .= "<td><a href=\'".$Profile->{"Versions"}{$V}{"Changelog"}."\'>changelog</a></td>\n";
         }
         else {
             $Content .= "<td>N/A</td>\n";
@@ -2691,8 +2800,11 @@ sub checkDB()
     
     foreach my $V (keys(%{$DB->{"Changelog"}}))
     {
-        if(not -e $DB->{"Changelog"}{$V}) {
-            delete($DB->{"Changelog"}{$V});
+        if($DB->{"Changelog"}{$V} ne "Off")
+        {
+            if(not -e $DB->{"Changelog"}{$V}) {
+                delete($DB->{"Changelog"}{$V});
+            }
         }
     }
     
@@ -2812,6 +2924,12 @@ sub scenario()
         exit(0);
     }
     
+    if($Help)
+    {
+        printMsg("INFO", $HelpMessage);
+        exit(0);
+    }
+    
     loadModule("Basic");
 
     # check ABI Dumper
@@ -2910,18 +3028,40 @@ sub scenario()
             mkpath($Deploy);
         }
         
-        # clear deploy directory
-        foreach my $Dir (@Reports) {
-            rmtree($Deploy."/".$Dir);
-        }
-        
-        # copy reports
-        foreach my $Dir (@Reports, "css")
+        if($TARGET_LIB)
         {
-            if(-d $Dir)
-            {
-                system("cp -fr \"$Dir\" \"$Deploy/\"");
+            # clear deploy directory
+            foreach my $Dir (@Reports) {
+                rmtree($Deploy."/".$Dir."/".$TARGET_LIB);
             }
+            
+            # copy reports
+            foreach my $Dir (@Reports, "db", "public_types", "public_symbols")
+            {
+                if(-d $Dir."/".$TARGET_LIB)
+                {
+                    mkpath($Deploy."/".$Dir);
+                    system("cp -fr \"$Dir/$TARGET_LIB\" \"$Deploy/$Dir/\"");
+                }
+            }
+            system("cp -fr css \"$Deploy/\"");
+        }
+        else
+        {
+            # clear deploy directory
+            foreach my $Dir (@Reports) {
+                rmtree($Deploy."/".$Dir);
+            }
+            
+            # copy reports
+            foreach my $Dir (@Reports, "db", "public_types", "public_symbols")
+            {
+                if(-d $Dir)
+                {
+                    system("cp -fr \"$Dir\" \"$Deploy/\"");
+                }
+            }
+            system("cp -fr css \"$Deploy/\"");
         }
     }
 }
