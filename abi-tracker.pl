@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.1
+# ABI Tracker 1.2
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
@@ -43,7 +43,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.1";
+my $TOOL_VERSION = "1.2";
 my $DB_PATH = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -411,6 +411,24 @@ sub buildData()
         }
     }
     
+    if($Rebuild and not $TargetElement and $TargetVersion)
+    { # rebuild previous ABI dump
+        my $PV = undef;
+        
+        foreach my $V (reverse(@Versions))
+        {
+            if($V eq $TargetVersion)
+            {
+                if(defined $PV)
+                {
+                    createABIDump($PV);
+                    last;
+                }
+            }
+            $PV = $V;
+        }
+    }
+    
     if(checkTarget("abiview"))
     {
         foreach my $V (@Versions)
@@ -714,9 +732,21 @@ sub createChangelog($)
         $ChangelogPath = "$TmpDir/log";
         chdir($Source);
         
-        my $Cmd_L = "git log -100 --date=iso >$ChangelogPath";
+        my $Cmd_L = undef;
+        if(defined $Profile->{"Git"})
+        {
+            $Cmd_L = "git log -100 --date=iso >$ChangelogPath";
+        }
+        elsif(defined $Profile->{"Svn"})
+        {
+            $Cmd_L = "svn log -l100 >$ChangelogPath";
+        }
+        else
+        {
+            printMsg("ERROR", "Unknown type of source code repository");
+            return 0;
+        }
         qx/$Cmd_L/; # execute
-        
         appendFile($ChangelogPath, "\n...");
         chdir($ORIG_DIR);
     }
@@ -811,7 +841,11 @@ sub toHtml($$)
     {
         if(defined $Profile->{"Git"})
         {
-            $Note = " (git)";
+            $Note = " (Git)";
+        }
+        elsif(defined $Profile->{"Svn"})
+        {
+            $Note = " (Svn)";
         }
     }
     
@@ -853,7 +887,7 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("ChangeLog", "Changelog", "NEWS")
+    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -874,9 +908,11 @@ sub getScmUpdateTime()
         }
         
         my $Time = undef;
+        my $Head = undef;
+        
         if(defined $Profile->{"Git"})
         {
-            my $Head = "$Source/.git/FETCH_HEAD";
+            $Head = "$Source/.git/FETCH_HEAD";
             
             if(not -f $Head)
             { # is not updated yet
@@ -887,12 +923,21 @@ sub getScmUpdateTime()
             {
                 $Head = undef;
             }
+        }
+        elsif(defined $Profile->{"Svn"})
+        {
+            $Head = "$Source/.svn/wc.db";
             
-            if($Head)
+            if(not -f $Head)
             {
-                $Time = `stat -c \%Y \"$Head\"`;
-                chomp($Time);
+                $Head = undef;
             }
+        }
+        
+        if($Head)
+        {
+            $Time = `stat -c \%Y \"$Head\"`;
+            chomp($Time);
         }
         
         if($Time) {
@@ -939,13 +984,32 @@ sub detectDate($)
     
     if($V eq "current")
     {
-        chdir($Source);
-        my $Log = `git log -1 --date=iso`;
-        chdir($ORIG_DIR);
-        
-        if($Log=~/ (\d+\-\d+\-\d+ \d+:\d+:\d+) /)
+        if(defined $Profile->{"Git"})
         {
-            $Date = $1;
+            chdir($Source);
+            my $Log = `git log -1 --date=iso`;
+            chdir($ORIG_DIR);
+            
+            if($Log=~/ (\d+\-\d+\-\d+ \d+:\d+:\d+) /)
+            {
+                $Date = $1;
+            }
+        }
+        elsif(defined $Profile->{"Svn"})
+        {
+            chdir($Source);
+            my $Log = `svn log -l1`;
+            chdir($ORIG_DIR);
+            
+            if($Log=~/ (\d+\-\d+\-\d+ \d+:\d+:\d+) /)
+            {
+                $Date = $1;
+            }
+        }
+        else
+        {
+            printMsg("ERROR", "Unknown type of source code repository");
+            return 0;
         }
     }
     else
@@ -1192,7 +1256,7 @@ sub createABIView($)
         }
         
         my $Name = $Object;
-        $Name=~s/\Alib\///;
+        $Name=~s/\Alib(64|32|)\///;
         
         $Report .= "<tr>\n";
         $Report .= "<td class='object'>$Name</td>\n";
@@ -1266,12 +1330,22 @@ sub createABIReport($$)
     
     my (@Objects1, @Objects2) = ();
     
-    foreach my $Md5 (sort keys(%{$D1})) {
-        push(@Objects1, $D1->{$Md5}{"Object"});
+    foreach my $Md5 (sort keys(%{$D1}))
+    {
+        my $Obj = $D1->{$Md5}{"Object"};
+        if(skipLib($Obj)) {
+            next;
+        }
+        push(@Objects1, $Obj);
     }
     
-    foreach my $Md5 (sort keys(%{$D2})) {
-        push(@Objects2, $D2->{$Md5}{"Object"});
+    foreach my $Md5 (sort keys(%{$D2}))
+    {
+        my $Obj = $D2->{$Md5}{"Object"};
+        if(skipLib($Obj)) {
+            next;
+        }
+        push(@Objects2, $Obj);
     }
     
     @Objects1 = sort {lc($a) cmp lc($b)} @Objects1;
@@ -1406,7 +1480,7 @@ sub createABIReport($$)
     {
         my $Object2 = $Mapped{$Object1};
         
-        my ($Soname1, $Soname2) = ($Object1, $Object2);
+        my ($Soname1, $Soname2) = (getFilename($Object1), getFilename($Object2));
         
         if(defined $DB->{"Soname"}{$V1}
         and defined $DB->{"Soname"}{$V1}{$Object1}
@@ -1458,7 +1532,7 @@ sub createABIReport($$)
     foreach my $Object2 (@Objects2)
     {
         my $Name = $Object2;
-        $Name=~s/\Alib\///;
+        $Name=~s/\Alib(64|32|)\///;
         
         if(defined $Added{$Object2})
         {
@@ -1477,7 +1551,7 @@ sub createABIReport($$)
         $Report .= "<tr>\n";
         
         my $Name = $Object1;
-        $Name=~s/\Alib\///;
+        $Name=~s/\Alib(64|32|)\///;
         
         if($Mapped{$Object1})
         {
@@ -1848,8 +1922,9 @@ sub compareABIs($$$$)
     my $Md5 = getMd5($Obj1, $Obj2);
     $Dir .= "/".$Md5;
     my $Output = $Dir."/abi_compat_report.html";
+    my $Module = getObjectName(getFilename($Obj1), "Short");
     
-    my $Cmd = $ABI_CC." -l \"$TARGET_LIB\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
+    my $Cmd = $ABI_CC." -l \"$Module\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
     
     if(my $PCmd = publicSymbols($V1, $V2, $Dump1->{"Lang"})) {
         $Cmd .= $PCmd;
@@ -2139,7 +2214,7 @@ sub getHead($)
     $Head .= "<tr>";
     
     $Head .= "<td align='center'>";
-    $Head .= "<h1 class='tool'><a title=\'Home: ABI tracker for $TARGET_LIB\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>ABI<br/>Tracker</a></h1>";
+    $Head .= "<h1 class='tool'><a title=\'Home: ABI tracker for ".showTitle()."\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>ABI<br/>Tracker</a></h1>";
     $Head .= "</td>";
     
     $Head .= "<td width='30px;'>";
@@ -2978,7 +3053,8 @@ sub scenario()
         
         foreach my $V (keys(%{$Profile->{"Versions"}}))
         {
-            if($Profile->{"Versions"}{$V}{"Deleted"})
+            if($Profile->{"Versions"}{$V}{"Deleted"}
+            and $Profile->{"Versions"}{$V}{"Deleted"} ne "Off")
             { # do not show this version in the report
                 delete($Profile->{"Versions"}{$V});
             }
