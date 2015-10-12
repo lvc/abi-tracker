@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.2
+# ABI Tracker 1.3
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
@@ -15,9 +15,9 @@
 # ============
 #  Perl 5 (5.8 or newer)
 #  Elfutils (eu-readelf)
-#  ABI Dumper (0.99.9 or newer)
+#  ABI Dumper (0.99.11 or newer)
 #  Vtable-Dumper (1.1 or newer)
-#  ABI Compliance Checker (1.99.10 or newer)
+#  ABI Compliance Checker (1.99.13 or newer)
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
@@ -43,7 +43,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.2";
+my $TOOL_VERSION = "1.3";
 my $DB_PATH = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -52,11 +52,11 @@ my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
 
 my $ABI_DUMPER = "abi-dumper";
-my $ABI_DUMPER_VERSION = "0.99.9";
+my $ABI_DUMPER_VERSION = "0.99.11";
 my $ABI_DUMPER_EE = 0;
 
 my $ABI_CC = "abi-compliance-checker";
-my $ABI_CC_VERSION = "1.99.10";
+my $ABI_CC_VERSION = "1.99.13";
 
 my $RFCDIFF = "rfcdiff";
 my $PKGDIFF = "pkgdiff";
@@ -109,7 +109,7 @@ GetOptions("h|help!" => \$Help,
   "rebuild!" => \$Rebuild,
 # internal options
   "v=s" => \$TargetVersion,
-  "target=s" => \$TargetElement,
+  "t|target=s" => \$TargetElement,
   "clear!" => \$Clear,
   "global-index!" => \$GlobalIndex,
   "deploy=s" => \$Deploy
@@ -163,7 +163,7 @@ GENERAL OPTIONS:
       Select only one particular version of the library to
       create reports for.
   
-  -target TYPE
+  -t|-target TYPE
       Select type of the reports to build:
       
         abidump
@@ -328,7 +328,7 @@ sub readProfile($)
     return \%Res;
 }
 
-sub skipVersion($)
+sub skipVersion_T($)
 {
     my $V = $_[0];
     
@@ -343,14 +343,46 @@ sub skipVersion($)
     return 0;
 }
 
+sub skipVersion($)
+{
+    my $V = $_[0];
+    
+    if(defined $Profile->{"SkipVersions"})
+    {
+        my @Skip = @{$Profile->{"SkipVersions"}};
+        
+        foreach my $E (@Skip)
+        {
+            if($E=~s/\*/\.*/g)
+            { # pattern
+                if($V=~/\A$E\Z/) {
+                    return 1;
+                }
+            }
+            elsif($E eq $V) {
+                return 1;
+            }
+        }
+    }
+    
+    return 0;
+}
+
 sub buildData()
 {
-    my @Versions = keys(%{$Profile->{"Versions"}});
-    @Versions = sort {int($Profile->{"Versions"}{$a}{"Pos"})<=>int($Profile->{"Versions"}{$b}{"Pos"})} @Versions;
+    my @Versions = getVersionsList();
+    
+    if($TargetVersion)
+    {
+        if(not grep {$_ eq $TargetVersion} @Versions)
+        {
+            printMsg("ERROR", "unknown version number \'$TargetVersion\'");
+        }
+    }
     
     foreach my $V (@Versions)
     {
-        if(skipVersion($V)) {
+        if(skipVersion_T($V)) {
             next;
         }
         if(my $Installed = $Profile->{"Versions"}{$V}{"Installed"})
@@ -367,7 +399,7 @@ sub buildData()
     {
         foreach my $V (@Versions)
         {
-            if(skipVersion($V)) {
+            if(skipVersion_T($V)) {
                 next;
             }
             
@@ -379,7 +411,7 @@ sub buildData()
     {
         foreach my $V (@Versions)
         {
-            if(skipVersion($V)) {
+            if(skipVersion_T($V)) {
                 next;
             }
             
@@ -391,7 +423,7 @@ sub buildData()
     {
         foreach my $V (@Versions)
         {
-            if(skipVersion($V)) {
+            if(skipVersion_T($V)) {
                 next;
             }
             
@@ -403,7 +435,7 @@ sub buildData()
     {
         foreach my $V (@Versions)
         {
-            if(skipVersion($V)) {
+            if(skipVersion_T($V)) {
                 next;
             }
             
@@ -433,7 +465,7 @@ sub buildData()
     {
         foreach my $V (@Versions)
         {
-            if(skipVersion($V)) {
+            if(skipVersion_T($V)) {
                 next;
             }
             
@@ -449,7 +481,7 @@ sub buildData()
             $O_V = $Versions[$P+1];
         }
         
-        if(skipVersion($V)) {
+        if(skipVersion_T($V)) {
             next;
         }
         
@@ -493,7 +525,17 @@ sub findObjects($)
 {
     my $Dir = $_[0];
     
-    return findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    my @Files = findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    my @Res = ();
+    
+    foreach my $F (@Files)
+    {
+        if(-B $F) {
+            push(@Res, $F);
+        }
+    }
+    
+    return @Res;
 }
 
 sub findHeaders($)
@@ -603,7 +645,7 @@ sub skipLib($)
             }
             else
             { # file
-                if($L=~s/\*/\.*/)
+                if($L=~s/\*/\.*/g)
                 { # pattern
                     if($Name=~/\A$L\Z/) {
                         return 1;
@@ -629,23 +671,31 @@ sub getSover($)
 {
     my $Name = $_[0];
     
-    my @V = ();
+    my ($Pre, $Post) = ();
+    
+    if($Name=~/\.so\.([\w\.\-]+)/) {
+        $Post = $1;
+    }
     
     if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so\./)
     { # libMagickCore6-Q16.so.1
-        push(@V, $1);
+        $Pre = $1;
     }
     elsif($Name=~/\-([a-zA-Z]?\d[\w\.\-]*)\.so\./)
     { # libMagickCore-6.Q16.so.1
       # libMagickCore-Q16.so.7
-        push(@V, $1);
+        $Pre = $1;
     }
-    elsif($Name=~/([\d\.])\.so\./) {
-        push(@V, $1);
+    elsif(not $Post and $Name=~/([\d\.])\.so\./) {
+        $Pre = $1;
     }
     
-    if($Name=~/\.so\.([\w\.\-]+)/) {
-        push(@V, $1);
+    my @V = ();
+    if($Pre) {
+        push(@V, $Pre);
+    }
+    if($Post) {
+        push(@V, $Post);
     }
     
     if(@V) {
@@ -887,7 +937,8 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog")
+    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog",
+    "RELEASE_NOTES.md", "RELEASE_NOTES.markdown")
     {
         if(-f $Dir."/".$Name
         and -s $Dir."/".$Name)
@@ -1104,13 +1155,13 @@ sub createABIDump($)
         
         my $ABIDir = $Dir."/".$Md5;
         my $ABIDump = $ABIDir."/ABI.dump";
+        
         my $Cmd = $ABI_DUMPER." \"".$Object."\" -output \"".$ABIDump."\" -lver \"$V\"";
         
-        if(my $PSyms = $Profile->{"Versions"}{$V}{"PublicSymbols"})
-        {
-            if(-f $PSyms) {
-                $Cmd .= " -header-symbols \"$PSyms\"";
-            }
+        if(not $Profile->{"PrivateABI"})
+        { # set "PrivateABI":1 in the profile to check all symbols
+            $Cmd .= " -public-headers \"$Installed\"";
+            $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
         }
         
         if($ABI_DUMPER_EE)
@@ -1133,6 +1184,7 @@ sub createABIDump($)
             
             push(@Meta, "\"Object\": \"".$RPath."\"");
             push(@Meta, "\"Lang\": \"".$Dump->{"Language"}."\"");
+            push(@Meta, "\"PublicABI\": \"1\"");
             
             writeFile($Dir."/".$Md5."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
         }
@@ -1148,21 +1200,23 @@ sub getObjectName($$)
 {
     my ($Object, $T) = @_;
     
+    my $Name = getFilename($Object);
+    
     if($T eq "Short")
     {
-        if($Object=~/\A(.+)\.so[\d\.]*\Z/) {
+        if($Name=~/\A(.+)\.so[\d\.]*\Z/) {
             return $1;
         }
     }
     elsif($T eq "SuperShort")
     {
-        if($Object=~/\A(.+?)(\d+[\d\.]*\-[\w\.\-]*)\.so\./) {
+        if($Name=~/\A(.+?)(\d+[\d\.]*\-[\w\.\-]*)\.so\./) {
             return $1;
         }
-        elsif($Object=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so\./) {
+        elsif($Name=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so\./) {
             return $1;
         }
-        elsif($Object=~/\A(.+?)[\d\.\-\_]*\.so[\d\.]*\Z/) {
+        elsif($Name=~/\A(.+?)[\d\.\-\_]*\.so[\d\.]*\Z/) {
             return $1;
         }
     }
@@ -1584,17 +1638,17 @@ sub createABIReport($$)
                 my $TotalProblems = $ABIReport_D->{"TotalProblems"};
                 
                 my $CClass = "ok";
-                my $TClass = "incompatible";
                 
-                if($BC_D eq "100") {
-                    $TClass = "warning";
+                if($BC_D eq "100")
+                {
+                    if($TotalProblems) {
+                        $CClass = "warning";
+                    }
                 }
                 else
                 {
-                    if(int($BC_D)>=90)
-                    {
+                    if(int($BC_D)>=90) {
                         $CClass = "warning";
-                        $TClass = "warning";
                     }
                     else {
                         $CClass = "incompatible";
@@ -1606,7 +1660,7 @@ sub createABIReport($$)
                 if($Profile->{"ShowTotalProblems"})
                 {
                     if($TotalProblems) {
-                        $Report .= "<td class=\'$TClass\'><a class='num' href='../../../../".$ABIReport_D->{"Path"}."'>$TotalProblems</td>\n";
+                        $Report .= "<td class=\'$CClass\'><a class='num' href='../../../../".$ABIReport_D->{"Path"}."'>$TotalProblems</td>\n";
                     }
                     else {
                         $Report .= "<td class='ok'>0</td>\n";
@@ -1765,15 +1819,12 @@ sub createABIView_Object($$)
     
     my $Cmd = $ABI_VIEWER." -skip-std -vnum \"$V\" -output \"$Dir\" \"".getDirname($Dump)."\"";
     
-    if(my $ListPath = $Profile->{"Versions"}{$V}{"PublicSymbols"}) {
-        $Cmd .= " -symbols-list \"$ListPath\"";
-    }
-    
     my $Log = `$Cmd`; # execute
     
     $DB->{"ABIView_D"}{$V}{$Md5}{"Path"} = $Output;
 }
 
+# Obsolete function
 sub publicSymbols($$$)
 {
     my ($V1, $V2, $Lang) = @_;
@@ -1783,24 +1834,24 @@ sub publicSymbols($$$)
         return undef;
     }
     
-    my $I_Dir1 = $Profile->{"Versions"}{$V1}{"Installed"};
-    my $I_Dir2 = $Profile->{"Versions"}{$V2}{"Installed"};
+    my $Cmd = "";
     
+    my @Headers1 = ();
+    my @Headers2 = ();
+    
+    my $I_Dir1 = $Profile->{"Versions"}{$V1}{"Installed"};
     if(not -d $I_Dir1) {
         return undef;
     }
+    @Headers1 = findHeaders($I_Dir1);
     
+    my $I_Dir2 = $Profile->{"Versions"}{$V2}{"Installed"};
     if(not -d $I_Dir2) {
         return undef;
     }
+    @Headers2 = findHeaders($I_Dir2);
     
-    my $Cmd = "";
-    
-    my @Headers1 = findHeaders($I_Dir1);
-    my @Headers2 = findHeaders($I_Dir2);
     my %PH = map {getFilename($_)=>1} @Headers1, @Headers2;
-    
-    # TODO: select better way to filter public symbols (by headers or by symbols)
     
     if(my @PH = sort {lc($a) cmp lc($b)} keys(%PH))
     {
@@ -1813,6 +1864,7 @@ sub publicSymbols($$$)
     if($Lang eq "C")
     {
         my %PubSyms = ();
+        
         if(my $PSyms1 = $Profile->{"Versions"}{$V1}{"PublicSymbols"})
         {
             if(-f $PSyms1)
@@ -1828,6 +1880,7 @@ sub publicSymbols($$$)
                 }
             }
         }
+        
         if(my $PSyms2 = $Profile->{"Versions"}{$V2}{"PublicSymbols"})
         {
             if(-f $PSyms2)
@@ -1850,48 +1903,6 @@ sub publicSymbols($$$)
             writeFile($ListPath, join("\n", @Syms));
             
             $Cmd .= " -symbols-list \"$ListPath\"";
-        }
-    }
-    elsif($Lang eq "C++" and $Profile->{"PublicTypesOnly"})
-    { # TODO: this filter is not used yet
-        my %PubTypes = ();
-        if(my $PTypes1 = $Profile->{"Versions"}{$V1}{"PublicTypes"})
-        {
-            if(-f $PTypes1)
-            {
-                $PTypes1 = readFile($PTypes1);
-                $PTypes1 = eval($PTypes1);
-                foreach my $P (sort keys(%{$PTypes1}))
-                {
-                    foreach my $T (sort keys(%{$PTypes1->{$P}}))
-                    {
-                        $PubTypes{$T} = 1;
-                    }
-                }
-            }
-        }
-        if(my $PTypes2 = $Profile->{"Versions"}{$V2}{"PublicTypes"})
-        {
-            if(-f $PTypes2)
-            {
-                $PTypes2 = readFile($PTypes2);
-                $PTypes2 = eval($PTypes2);
-                foreach my $P (sort keys(%{$PTypes2}))
-                {
-                    foreach my $T (sort keys(%{$PTypes2->{$P}}))
-                    {
-                        $PubTypes{$T} = 1;
-                    }
-                }
-            }
-        }
-        
-        if(my @Types = keys(%PubTypes))
-        {
-            my $ListPath = $TMP_DIR."/types.list";
-            writeFile($ListPath, join("\n", @Types));
-            
-            $Cmd .= " -types-list \"$ListPath\"";
         }
     }
     
@@ -1918,6 +1929,9 @@ sub compareABIs($$$$)
     my $Dump1 = $DB->{"ABIDump"}{$V1}{getMd5($Obj1)};
     my $Dump2 = $DB->{"ABIDump"}{$V2}{getMd5($Obj2)};
     
+    my $Dump1_Meta = readProfile(readFile(getDirname($Dump1->{"Path"})."/meta.json"));
+    my $Dump2_Meta = readProfile(readFile(getDirname($Dump2->{"Path"})."/meta.json"));
+    
     my $Dir = "compat_report/$TARGET_LIB/$V1/$V2";
     my $Md5 = getMd5($Obj1, $Obj2);
     $Dir .= "/".$Md5;
@@ -1926,12 +1940,23 @@ sub compareABIs($$$$)
     
     my $Cmd = $ABI_CC." -l \"$Module\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
     
-    if(my $PCmd = publicSymbols($V1, $V2, $Dump1->{"Lang"})) {
-        $Cmd .= $PCmd;
+    if(not $Dump1_Meta->{"PublicABI"} or not $Dump2_Meta->{"PublicABI"})
+    { # support for old versions of ABI Tracker
+        if(my $PCmd = publicSymbols($V1, $V2, $Dump1->{"Lang"})) {
+            $Cmd .= $PCmd;
+        }
     }
     
     if(my $SkipSymbols = $Profile->{"SkipSymbols"}) {
         $Cmd .= " -skip-symbols \"$SkipSymbols\"";
+    }
+    
+    if(my $SkipInternalSymbols = $Profile->{"SkipInternalSymbols"}) {
+        $Cmd .= " -skip-internal-symbols \"$SkipInternalSymbols\"";
+    }
+    
+    if(my $SkipInternalTypes = $Profile->{"SkipInternalTypes"}) {
+        $Cmd .= " -skip-internal-types \"$SkipInternalTypes\"";
     }
     
     my $Log = `$Cmd`; # execute
@@ -2196,7 +2221,7 @@ sub getTop($)
         $Rel = "../..";
     }
     elsif($Page=~/\A(global_index)\Z/) {
-        $Rel = "..";
+        $Rel = ".";
     }
     
     return $Rel;
@@ -2268,6 +2293,13 @@ sub getS($)
     return "";
 }
 
+sub getVersionsList()
+{
+    my @Versions = keys(%{$Profile->{"Versions"}});
+    @Versions = sort {int($Profile->{"Versions"}{$a}{"Pos"})<=>int($Profile->{"Versions"}{$b}{"Pos"})} @Versions;
+    return @Versions;
+}
+
 sub createTimeline()
 {
     $DB->{"Updated"} = time;
@@ -2282,8 +2314,7 @@ sub createTimeline()
     my $Content = composeHTML_Head($Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, getTop("timeline"), "report.css", "");
     $Content .= "<body>\n";
     
-    my @Versions = keys(%{$Profile->{"Versions"}});
-    @Versions = sort {int($Profile->{"Versions"}{$a}{"Pos"})<=>int($Profile->{"Versions"}{$b}{"Pos"})} @Versions;
+    my @Versions = getVersionsList();
     
     my $HeadersDiff = "Off";
     my $PkgDiff = "Off";
@@ -2325,7 +2356,7 @@ sub createTimeline()
     $Content .= "<tr>\n";
     $Content .= "<th>Version</th>\n";
     $Content .= "<th>Date</th>\n";
-    $Content .= "<th title='If all objects in the package have the same SONAME'>Soname</th>\n";
+    $Content .= "<th>Soname</th>\n";
     $Content .= "<th>Change<br/>Log</th>\n";
     $Content .= "<th>Backward<br/>Compatibility</th>\n";
     if($Profile->{"ShowTotalProblems"}) {
@@ -2448,6 +2479,10 @@ sub createTimeline()
                     $CClass = "incompatible";
                 }
             }
+            elsif($TotalProblems) {
+                $CClass = "warning";
+            }
+            
             my $BC_Summary = "<a href='../../".$ABIReport->{"Path"}."'>$BC%</a>";
             
             if(@Note)
@@ -2634,7 +2669,7 @@ sub createGlobalIndex()
         
         $Content .= "<tr>\n";
         $Content .= "<td>$L</td>\n";
-        $Content .= "<td><a target='_blank' href='$L/index.html'>timeline</a></td>\n";
+        $Content .= "<td><a href='timeline/$L/index.html'>timeline</a></td>\n";
         
         #my $M = $DB->{"Maintainer"};
         
@@ -2651,7 +2686,7 @@ sub createGlobalIndex()
     $Content .= getSign("Other");
     $Content .= "</body></html>";
     
-    my $Output = "timeline/index.html";
+    my $Output = "index.html";
     writeFile($Output, $Content);
     printMsg("INFO", "The global index has been generated to: $Output");
 }
@@ -3051,12 +3086,19 @@ sub scenario()
             exitStatus("Error", "name of the library is not specified in profile");
         }
         
-        foreach my $V (keys(%{$Profile->{"Versions"}}))
+        foreach my $V (sort keys(%{$Profile->{"Versions"}}))
         {
             if($Profile->{"Versions"}{$V}{"Deleted"}
             and $Profile->{"Versions"}{$V}{"Deleted"} ne "Off")
             { # do not show this version in the report
                 delete($Profile->{"Versions"}{$V});
+                next;
+            }
+            
+            if(skipVersion($V))
+            {
+                delete($Profile->{"Versions"}{$V});
+                next;
             }
         }
         
@@ -3065,12 +3107,15 @@ sub scenario()
         
         if($Clear)
         {
+            printMsg("INFO", "Remove $DB_PATH");
             unlink($DB_PATH);
             
             foreach my $Dir (@Reports)
             {
+                printMsg("INFO", "Remove $Dir/$TARGET_LIB");
                 rmtree($Dir."/".$TARGET_LIB);
             }
+            exit(0);
         }
         
         $DB = readDB($DB_PATH);
@@ -3098,6 +3143,7 @@ sub scenario()
     
     if($Deploy)
     {
+        printMsg("INFO", "Deploy to $Deploy");
         $Deploy = abs_path($Deploy);
         
         if(not -d $Deploy) {
@@ -3112,14 +3158,16 @@ sub scenario()
             }
             
             # copy reports
-            foreach my $Dir (@Reports, "db", "public_types", "public_symbols")
+            foreach my $Dir (@Reports, "db")
             {
                 if(-d $Dir."/".$TARGET_LIB)
                 {
+                    printMsg("INFO", "Copy $Dir/$TARGET_LIB");
                     mkpath($Deploy."/".$Dir);
                     system("cp -fr \"$Dir/$TARGET_LIB\" \"$Deploy/$Dir/\"");
                 }
             }
+            printMsg("INFO", "Copy css");
             system("cp -fr css \"$Deploy/\"");
         }
         else
@@ -3130,13 +3178,15 @@ sub scenario()
             }
             
             # copy reports
-            foreach my $Dir (@Reports, "db", "public_types", "public_symbols")
+            foreach my $Dir (@Reports, "db")
             {
                 if(-d $Dir)
                 {
+                    printMsg("INFO", "Copy $Dir");
                     system("cp -fr \"$Dir\" \"$Deploy/\"");
                 }
             }
+            printMsg("INFO", "Copy css");
             system("cp -fr css \"$Deploy/\"");
         }
     }
