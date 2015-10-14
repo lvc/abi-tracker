@@ -44,7 +44,7 @@ use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
 my $TOOL_VERSION = "1.3";
-my $DB_PATH = "Tracker.data";
+my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
 # Internal modules
@@ -187,6 +187,7 @@ GENERAL OPTIONS:
 my $Profile;
 my $DB;
 my $TARGET_LIB;
+my $DB_PATH = undef;
 
 sub get_Modules()
 {
@@ -671,7 +672,7 @@ sub getSover($)
 {
     my $Name = $_[0];
     
-    my ($Pre, $Post) = ();
+    my ($Pre, $Post) = (undef, undef);
     
     if($Name=~/\.so\.([\w\.\-]+)/) {
         $Post = $1;
@@ -686,15 +687,15 @@ sub getSover($)
       # libMagickCore-Q16.so.7
         $Pre = $1;
     }
-    elsif(not $Post and $Name=~/([\d\.])\.so\./) {
+    elsif(not defined $Post and $Name=~/([\d\.])\.so\./) {
         $Pre = $1;
     }
     
     my @V = ();
-    if($Pre) {
+    if(defined $Pre) {
         push(@V, $Pre);
     }
-    if($Post) {
+    if(defined $Post) {
         push(@V, $Post);
     }
     
@@ -1293,7 +1294,7 @@ sub createABIView($)
     my $Report = "";
     
     $Report .= getHead("objects_view");
-    $Report .= "<h1>View object(s) ABI: <span class='version'>$V</span></h1>\n";
+    $Report .= "<h1>View objects ABI: <span class='version'>$V</span></h1>\n";
     $Report .= "<br/>\n";
     $Report .= "<br/>\n";
     
@@ -1331,9 +1332,9 @@ sub createABIView($)
     
     $Report .= getSign("Other");
     
-    my $Title = showTitle().": View object(s) ABI of $V version";
+    my $Title = showTitle().": View objects ABI of $V version";
     my $Keywords = showTitle().", ABI, view, report";
-    my $Desc = "View object(s) ABI of the $TARGET_LIB $V";
+    my $Desc = "View objects ABI of the $TARGET_LIB $V";
     
     $Report = composeHTML_Head($Title, $Keywords, $Desc, getTop("objects_view"), "report.css", "")."\n<body>\n$Report\n</body>\n</html>\n";
     
@@ -1359,7 +1360,7 @@ sub createABIReport($$)
         }
     }
     
-    printMsg("INFO", "Creating object(s) report between $V1 and $V2");
+    printMsg("INFO", "Creating objects report between $V1 and $V2");
     
     if(not defined $DB->{"ABIDump"}{$V1}) {
         createABIDump($V1);
@@ -1380,6 +1381,13 @@ sub createABIReport($$)
     
     if(not $D1 or not $D2) {
         return 0;
+    }
+    
+    # Remove old reports
+    my $CDir = "compat_report/$TARGET_LIB/$V1/$V2";
+    
+    if(-d $CDir) {
+        rmtree($CDir);
     }
     
     my (@Objects1, @Objects2) = ();
@@ -1568,7 +1576,7 @@ sub createABIReport($$)
     my $Report = "";
     
     $Report .= getHead("objects_report");
-    $Report .= "<h1>Object(s) report: <span class='version'>$V1</span> vs <span class='version'>$V2</span></h1>\n"; # API/ABI changes report
+    $Report .= "<h1>Objects report: <span class='version'>$V1</span> vs <span class='version'>$V2</span></h1>\n"; # API/ABI changes report
     $Report .= "<br/>\n";
     $Report .= "<br/>\n";
     
@@ -1698,7 +1706,7 @@ sub createABIReport($$)
     
     $Report .= getSign("Other");
     
-    my $Title = showTitle().": Object(s) report between $V1 and $V2 versions";
+    my $Title = showTitle().": Objects report between $V1 and $V2 versions";
     my $Keywords = showTitle().", ABI, changes, compatibility, report";
     my $Desc = "ABI changes/compatibility report between $V1 and $V2 versions of the $TARGET_LIB";
     
@@ -1824,91 +1832,6 @@ sub createABIView_Object($$)
     $DB->{"ABIView_D"}{$V}{$Md5}{"Path"} = $Output;
 }
 
-# Obsolete function
-sub publicSymbols($$$)
-{
-    my ($V1, $V2, $Lang) = @_;
-    
-    if($Profile->{"PrivateABI"})
-    { # set "PrivateABI":1 in the profile to check all symbols
-        return undef;
-    }
-    
-    my $Cmd = "";
-    
-    my @Headers1 = ();
-    my @Headers2 = ();
-    
-    my $I_Dir1 = $Profile->{"Versions"}{$V1}{"Installed"};
-    if(not -d $I_Dir1) {
-        return undef;
-    }
-    @Headers1 = findHeaders($I_Dir1);
-    
-    my $I_Dir2 = $Profile->{"Versions"}{$V2}{"Installed"};
-    if(not -d $I_Dir2) {
-        return undef;
-    }
-    @Headers2 = findHeaders($I_Dir2);
-    
-    my %PH = map {getFilename($_)=>1} @Headers1, @Headers2;
-    
-    if(my @PH = sort {lc($a) cmp lc($b)} keys(%PH))
-    {
-        my $ListPath = $TMP_DIR."/headers.list";
-        writeFile($ListPath, join("\n", @PH));
-        
-        $Cmd .= " -headers-list \"$ListPath\"";
-    }
-    
-    if($Lang eq "C")
-    {
-        my %PubSyms = ();
-        
-        if(my $PSyms1 = $Profile->{"Versions"}{$V1}{"PublicSymbols"})
-        {
-            if(-f $PSyms1)
-            {
-                $PSyms1 = readFile($PSyms1);
-                $PSyms1 = eval($PSyms1);
-                foreach my $P (sort keys(%{$PSyms1}))
-                {
-                    foreach my $S (sort keys(%{$PSyms1->{$P}}))
-                    {
-                        $PubSyms{$S} = 1;
-                    }
-                }
-            }
-        }
-        
-        if(my $PSyms2 = $Profile->{"Versions"}{$V2}{"PublicSymbols"})
-        {
-            if(-f $PSyms2)
-            {
-                $PSyms2 = readFile($PSyms2);
-                $PSyms2 = eval($PSyms2);
-                foreach my $P (sort keys(%{$PSyms2}))
-                {
-                    foreach my $S (sort keys(%{$PSyms2->{$P}}))
-                    {
-                        $PubSyms{$S} = 1;
-                    }
-                }
-            }
-        }
-        
-        if(my @Syms = keys(%PubSyms))
-        {
-            my $ListPath = $TMP_DIR."/symbols.list";
-            writeFile($ListPath, join("\n", @Syms));
-            
-            $Cmd .= " -symbols-list \"$ListPath\"";
-        }
-    }
-    
-    return $Cmd;
-}
-
 sub compareABIs($$$$)
 {
     my ($V1, $V2, $Obj1, $Obj2) = @_;
@@ -1932,6 +1855,30 @@ sub compareABIs($$$$)
     my $Dump1_Meta = readProfile(readFile(getDirname($Dump1->{"Path"})."/meta.json"));
     my $Dump2_Meta = readProfile(readFile(getDirname($Dump2->{"Path"})."/meta.json"));
     
+    if(not $Dump1_Meta->{"PublicABI"})
+    { # support for old versions of ABI Tracker
+        printMsg("INFO", "It's necessary to re-generate ABI dump for $V1");
+        
+        if(not -d $Profile->{"Versions"}{$V1}{"Installed"}) {
+            exitStatus("Error", "the version \'$V1\' is not installed");
+        }
+        
+        $DB->{"ABIDump"}{$V1} = undef;
+        createABIDump($V1);
+    }
+    
+    if(not $Dump2_Meta->{"PublicABI"})
+    { # support for old versions of ABI Tracker
+        printMsg("INFO", "It's necessary to re-generate ABI dump for $V2");
+        
+        if(not -d $Profile->{"Versions"}{$V2}{"Installed"}) {
+            exitStatus("Error", "the version \'$V2\' is not installed");
+        }
+        
+        $DB->{"ABIDump"}{$V2} = undef;
+        createABIDump($V2);
+    }
+    
     my $Dir = "compat_report/$TARGET_LIB/$V1/$V2";
     my $Md5 = getMd5($Obj1, $Obj2);
     $Dir .= "/".$Md5;
@@ -1939,13 +1886,6 @@ sub compareABIs($$$$)
     my $Module = getObjectName(getFilename($Obj1), "Short");
     
     my $Cmd = $ABI_CC." -l \"$Module\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
-    
-    if(not $Dump1_Meta->{"PublicABI"} or not $Dump2_Meta->{"PublicABI"})
-    { # support for old versions of ABI Tracker
-        if(my $PCmd = publicSymbols($V1, $V2, $Dump1->{"Lang"})) {
-            $Cmd .= $PCmd;
-        }
-    }
     
     if(my $SkipSymbols = $Profile->{"SkipSymbols"}) {
         $Cmd .= " -skip-symbols \"$SkipSymbols\"";
@@ -2665,7 +2605,7 @@ sub createGlobalIndex()
     
     foreach my $L (sort @Libs)
     {
-        my $DB = eval(readFile("db/$L/Tracker.data"));
+        #my $DB = eval(readFile("db/$L/$DB_NAME"));
         
         $Content .= "<tr>\n";
         $Content .= "<td>$L</td>\n";
@@ -3000,7 +2940,9 @@ sub safeExit()
     printMsg("INFO", "\nGot INT signal");
     printMsg("INFO", "Exiting");
     
-    writeDB($DB_PATH);
+    if($DB_PATH) {
+        writeDB($DB_PATH);
+    }
     exit(1);
 }
 
@@ -3103,7 +3045,7 @@ sub scenario()
         }
         
         $TARGET_LIB = $Profile->{"Name"};
-        $DB_PATH = "db/".$TARGET_LIB."/".$DB_PATH;
+        $DB_PATH = "db/".$TARGET_LIB."/".$DB_NAME;
         
         if($Clear)
         {
