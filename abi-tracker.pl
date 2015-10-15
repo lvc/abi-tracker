@@ -570,9 +570,14 @@ sub detectSoname($)
     {
         if(defined $DB->{"Soname"}{$V})
         {
-            return 0;
+            if(not updateRequired($V)) {
+                return 0;
+            }
         }
     }
+    
+    delete($DB->{"Soname"}{$V}); # empty cache
+    delete($DB->{"Sover"}{$V}); # empty cache
     
     printMsg("INFO", "Detecting soname of $V");
     
@@ -1125,6 +1130,8 @@ sub createABIDump($)
         }
     }
     
+    delete($DB->{"ABIDump"}{$V}); # empty cache
+    
     printMsg("INFO", "Creating ABI dump for $V");
     
     my $Installed = $Profile->{"Versions"}{$V}{"Installed"};
@@ -1228,6 +1235,8 @@ sub getObjectName($$)
 sub createABIDiff($$)
 {
     my ($V1, $V2) = @_;
+    
+    # TODO
 }
 
 sub createABIView($)
@@ -1360,7 +1369,9 @@ sub createABIReport($$)
         }
     }
     
-    printMsg("INFO", "Creating objects report between $V1 and $V2");
+    delete($DB->{"ABIReport"}{$V1}{$V2}); # empty cache
+    
+    printMsg("INFO", "Creating objects ABI report between $V1 and $V2");
     
     if(not defined $DB->{"ABIDump"}{$V1}) {
         createABIDump($V1);
@@ -1576,7 +1587,7 @@ sub createABIReport($$)
     my $Report = "";
     
     $Report .= getHead("objects_report");
-    $Report .= "<h1>Objects report: <span class='version'>$V1</span> vs <span class='version'>$V2</span></h1>\n"; # API/ABI changes report
+    $Report .= "<h1>Objects ABI report: <span class='version'>$V1</span> vs <span class='version'>$V2</span></h1>\n"; # API/ABI changes report
     $Report .= "<br/>\n";
     $Report .= "<br/>\n";
     
@@ -1706,7 +1717,7 @@ sub createABIReport($$)
     
     $Report .= getSign("Other");
     
-    my $Title = showTitle().": Objects report between $V1 and $V2 versions";
+    my $Title = showTitle().": Objects ABI report between $V1 and $V2 versions";
     my $Keywords = showTitle().", ABI, changes, compatibility, report";
     my $Desc = "ABI changes/compatibility report between $V1 and $V2 versions of the $TARGET_LIB";
     
@@ -1836,16 +1847,20 @@ sub compareABIs($$$$)
 {
     my ($V1, $V2, $Obj1, $Obj2) = @_;
     
+    my $Md5 = getMd5($Obj1, $Obj2);
+    
     if(not $Rebuild)
     {
         if(defined $DB->{"ABIReport_D"}{$V1}{$V2}
-        and defined $DB->{"ABIReport_D"}{$V1}{$V2}{getMd5($Obj1, $Obj2)})
+        and defined $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5})
         {
             if(not updateRequired($V2)) {
                 return 0;
             }
         }
     }
+    
+    delete($DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}); # empty cache
     
     printMsg("INFO", "Creating ABICC report for $Obj1 ($V1) and $Obj2 ($V2)");
     
@@ -1880,7 +1895,6 @@ sub compareABIs($$$$)
     }
     
     my $Dir = "compat_report/$TARGET_LIB/$V1/$V2";
-    my $Md5 = getMd5($Obj1, $Obj2);
     $Dir .= "/".$Md5;
     my $Output = $Dir."/abi_compat_report.html";
     my $Module = getObjectName(getFilename($Obj1), "Short");
@@ -1960,6 +1974,8 @@ sub createPkgdiff($$)
         }
     }
     
+    delete($DB->{"PackageDiff"}{$V1}{$V2}); # empty cache
+    
     printMsg("INFO", "Creating package diff for $V1 and $V2");
     
     my $Source1 = $Profile->{"Versions"}{$V1}{"Source"};
@@ -2000,6 +2016,8 @@ sub diffHeaders($$)
             }
         }
     }
+    
+    delete($DB->{"HeadersDiff"}{$V1}{$V2}); # empty cache
     
     printMsg("INFO", "Diff headers $V1 and $V2");
     
