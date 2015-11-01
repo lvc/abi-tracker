@@ -61,3 +61,7 @@ a.info {
 table.summary td.object {
     text-align:left;
 }
+.sl {
+    max-width:95px;
+    word-wrap:break-word;
+}

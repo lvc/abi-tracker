@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.3
+# ABI Tracker 1.4
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
@@ -43,7 +43,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.3";
+my $TOOL_VERSION = "1.4";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -306,7 +306,7 @@ sub readProfile($)
         }
         
         # scalars
-        while($Info=~s/\"(\w+)\"\s*:\s*([^,\[]+?)\s*(\,|\Z)//)
+        while($Info=~s/\"(\w+)\"\s*:\s*(.+?)\s*\,?\s*$//m)
         {
             my ($K, $V) = ($1, $2);
             
@@ -618,6 +618,16 @@ sub detectSoname($)
     
     my $Sover = "None";
     
+    if(defined $Profile->{"SkipSoversions"})
+    {
+        foreach my $Skip (@{$Profile->{"SkipSoversions"}})
+        {
+            if(defined $Sovers{$Skip}) {
+                delete($Sovers{$Skip});
+            }
+        }
+    }
+    
     if(my @S = sort keys(%Sovers))
     {
         if($#S==0) {
@@ -683,16 +693,16 @@ sub getSover($)
         $Post = $1;
     }
     
-    if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so\./)
+    if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so(\.|\Z)/)
     { # libMagickCore6-Q16.so.1
         $Pre = $1;
     }
-    elsif($Name=~/\-([a-zA-Z]?\d[\w\.\-]*)\.so\./)
+    elsif($Name=~/\-([a-zA-Z]?\d[\w\.\-]*)\.so(\.|\Z)/)
     { # libMagickCore-6.Q16.so.1
       # libMagickCore-Q16.so.7
         $Pre = $1;
     }
-    elsif(not defined $Post and $Name=~/([\d\.])\.so\./) {
+    elsif(not defined $Post and $Name=~/([\d\.])\.so(\.|\Z)/) {
         $Pre = $1;
     }
     
@@ -1905,6 +1915,10 @@ sub compareABIs($$$$)
         $Cmd .= " -skip-symbols \"$SkipSymbols\"";
     }
     
+    if(my $SkipTypes = $Profile->{"SkipTypes"}) {
+        $Cmd .= " -skip-types \"$SkipTypes\"";
+    }
+    
     if(my $SkipInternalSymbols = $Profile->{"SkipInternalSymbols"}) {
         $Cmd .= " -skip-internal-symbols \"$SkipInternalSymbols\"";
     }
@@ -2258,14 +2272,19 @@ sub getVersionsList()
     return @Versions;
 }
 
-sub createTimeline()
+sub writeCss()
 {
-    $DB->{"Updated"} = time;
-    
     writeFile("css/common.css", readModule("Styles", "Common.css"));
     writeFile("css/report.css", readModule("Styles", "Report.css"));
     writeFile("css/headers_diff.css", readModule("Styles", "HeadersDiff.css"));
     writeFile("css/changelog.css", readModule("Styles", "Changelog.css"));
+}
+
+sub createTimeline()
+{
+    $DB->{"Updated"} = time;
+    
+    writeCss();
     
     my $Title = showTitle().": API/ABI changes timeline";
     my $Desc = "API/ABI compatibility analysis reports for ".$TARGET_LIB;
@@ -2274,6 +2293,7 @@ sub createTimeline()
     
     my @Versions = getVersionsList();
     
+    my $Changelog = "Off";
     my $HeadersDiff = "Off";
     my $PkgDiff = "Off";
     
@@ -2282,6 +2302,11 @@ sub createTimeline()
     my $ABIDiff = "Off";
     foreach my $V (@Versions)
     {
+        if($Profile->{"Versions"}{$V}{"Changelog"} ne "Off")
+        {
+            $Changelog = "On";
+        }
+        
         if($Profile->{"Versions"}{$V}{"HeadersDiff"} eq "On")
         {
             $HeadersDiff = "On";
@@ -2315,7 +2340,11 @@ sub createTimeline()
     $Content .= "<th>Version</th>\n";
     $Content .= "<th>Date</th>\n";
     $Content .= "<th>Soname</th>\n";
-    $Content .= "<th>Change<br/>Log</th>\n";
+    
+    if($Changelog ne "Off") {
+        $Content .= "<th>Change<br/>Log</th>\n";
+    }
+    
     $Content .= "<th>Backward<br/>Compatibility</th>\n";
     if($Profile->{"ShowTotalProblems"}) {
         $Content .= "<th>Total<br/>Problems</th>\n";
@@ -2392,17 +2421,20 @@ sub createTimeline()
         $Content .= "<td>".showDate($V, $Date)."</td>\n";
         $Content .= "<td>".$Sover."</td>\n";
         
-        my $Changelog = $DB->{"Changelog"}{$V};
-        
-        if($Changelog and $Changelog ne "Off"
-        and $Profile->{"Versions"}{$V}{"Changelog"} ne "Off") {
-            $Content .= "<td><a href=\'../../".$Changelog."\'>changelog</a></td>\n";
-        }
-        elsif(index($Profile->{"Versions"}{$V}{"Changelog"}, "://")!=-1) {
-            $Content .= "<td><a href=\'".$Profile->{"Versions"}{$V}{"Changelog"}."\'>changelog</a></td>\n";
-        }
-        else {
-            $Content .= "<td>N/A</td>\n";
+        if($Changelog ne "Off")
+        {
+            my $Chglog = $DB->{"Changelog"}{$V};
+            
+            if($Chglog and $Chglog ne "Off"
+            and $Profile->{"Versions"}{$V}{"Changelog"} ne "Off") {
+                $Content .= "<td><a href=\'../../".$Chglog."\'>changelog</a></td>\n";
+            }
+            elsif(index($Profile->{"Versions"}{$V}{"Changelog"}, "://")!=-1) {
+                $Content .= "<td><a href=\'".$Profile->{"Versions"}{$V}{"Changelog"}."\'>changelog</a></td>\n";
+            }
+            else {
+                $Content .= "<td>N/A</td>\n";
+            }
         }
         
         if(defined $ABIReport)
@@ -2602,6 +2634,8 @@ sub createGlobalIndex()
         #return 0;
     }
     
+    writeCss();
+    
     my $Title = "Maintained libraries";
     my $Desc = "List of maintained libraries";
     my $Content = composeHTML_Head($Title, "", $Desc, getTop("global_index"), "report.css", "");
@@ -2623,10 +2657,14 @@ sub createGlobalIndex()
     
     foreach my $L (sort @Libs)
     {
-        #my $DB = eval(readFile("db/$L/$DB_NAME"));
+        my $DB = eval(readFile("db/$L/$DB_NAME"));
+        my $Title = $L;
+        if(defined $DB->{"Title"}) {
+            $Title = $DB->{"Title"};
+        }
         
         $Content .= "<tr>\n";
-        $Content .= "<td>$L</td>\n";
+        $Content .= "<td class='sl'>$Title</td>\n";
         $Content .= "<td><a href='timeline/$L/index.html'>timeline</a></td>\n";
         
         #my $M = $DB->{"Maintainer"};
@@ -3080,8 +3118,9 @@ sub scenario()
         
         $DB = readDB($DB_PATH);
         
-        #$DB->{"Maintainer"} = $Profile->{"Maintainer"};
-        #$DB->{"MaintainerUrl"} = $Profile->{"MaintainerUrl"};
+        $DB->{"Maintainer"} = $Profile->{"Maintainer"};
+        $DB->{"MaintainerUrl"} = $Profile->{"MaintainerUrl"};
+        $DB->{"Title"} = $Profile->{"Title"};
         
         checkDB();
         checkFiles();
