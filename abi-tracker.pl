@@ -3,7 +3,7 @@
 # ABI Tracker 1.4
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
-# Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -21,7 +21,6 @@
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License or the GNU Lesser
 # General Public License as published by the Free Software Foundation.
@@ -36,7 +35,7 @@
 # If not, see <http://www.gnu.org/licenses/>.
 ##################################################################
 use Getopt::Long;
-Getopt::Long::Configure ("posix_default", "no_ignore_case");
+Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
 use File::Path qw(mkpath rmtree);
 use File::Temp qw(tempdir);
 use File::Basename qw(dirname basename);
@@ -87,7 +86,7 @@ my $HomePage = "http://abi-laboratory.pro/";
 
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
-Copyright (C) 2015 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
 License: GPL or LGPL
 
 Usage: $CmdName [options] [profile]
