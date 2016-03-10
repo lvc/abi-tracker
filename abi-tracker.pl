@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.4
+# ABI Tracker 1.5
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.4";
+my $TOOL_VERSION = "1.5";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -187,6 +187,14 @@ my $Profile;
 my $DB;
 my $TARGET_LIB;
 my $DB_PATH = undef;
+
+# Regenerate reports
+my $ObjectsReport = 0;
+
+# Report style
+my $LinkClass = " class='num'";
+my $LinkNew = " new";
+my $LinkRemoved = " removed";
 
 sub get_Modules()
 {
@@ -505,11 +513,6 @@ sub buildData()
                     createPkgdiff($O_V, $V);
                 }
             }
-            
-            if(checkTarget("abidiff"))
-            {
-                createABIDiff($O_V, $V);
-            }
         }
     }
     
@@ -519,13 +522,198 @@ sub buildData()
             $DB->{"ScmUpdateTime"} = $UTime;
         }
     }
+    
+    if(defined $TargetElement
+    and $TargetElement eq "graph")
+    {
+        my $First = $Versions[$#Versions];
+        my $Total = 0;
+        
+        foreach my $Md5 (sort keys(%{$DB->{"ABIDump"}{$First}}))
+        {
+            my $Dump = $DB->{"ABIDump"}{$First}{$Md5};
+            
+            if(not defined $Dump->{"TotalSymbols"})
+            { # support for old data
+                print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($First) ...\n";
+                $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+            }
+            
+            $Total += $Dump->{"TotalSymbols"};
+        }
+        
+        my $Scatter = {};
+        $Scatter->{$First} = 0;
+        
+        foreach my $P (0 .. $#Versions)
+        {
+            my $V = $Versions[$P];
+            my $O_V = undef;
+            if($P<$#Versions) {
+                $O_V = $Versions[$P+1];
+            }
+            
+            if(defined $DB->{"ABIReport"} and defined $DB->{"ABIReport"}{$O_V}
+            and defined $DB->{"ABIReport"}{$O_V}{$V})
+            {
+                my $ABIReport = $DB->{"ABIReport"}{$O_V}{$V};
+                
+                my $Added = $ABIReport->{"Added"};
+                my $Removed = $ABIReport->{"Removed"};
+                
+                my $AddedByObjects = $ABIReport->{"ObjectsAddedSymbols"};
+                my $RemovedByObjects = $ABIReport->{"ObjectsRemovedSymbols"};
+                
+                $Scatter->{$V} = $Added - $Removed + $AddedByObjects - $RemovedByObjects;
+            }
+        }
+        
+        my @Order = reverse(@Versions);
+        
+        simpleGraph($Scatter, \@Order, $Total);
+    }
+}
+
+sub countSymbols($)
+{
+    my $DumpPath = $_[0];
+    my $ABI = eval(readFile($DumpPath));
+    
+    return keys(%{$ABI->{"SymbolInfo"}});
+}
+
+sub countSymbols_Alt($)
+{
+    my $DumpPath = $_[0];
+    
+    my $ABI = eval(readFile($DumpPath));
+    
+    my $SymbolInfo = $ABI->{"SymbolInfo"};
+    my $Symbols = $ABI->{"Symbols"};
+    $Symbols = $Symbols->{(keys(%{$Symbols}))[0]};
+    
+    my $Total = 0;
+    
+    foreach (keys(%{$SymbolInfo}))
+    {
+        my $Name = $SymbolInfo->{$_}{"ShortName"};
+        if(defined $Symbols->{$Name})
+        {
+            $Total += 1;
+        }
+    }
+    
+    return $Total;
+}
+
+sub simpleGraph($$$)
+{
+    my ($Scatter, $Order, $StartVal) = @_;
+    
+    my @Vs = @{$Order};
+    
+    if($Vs[$#Vs] eq "current") {
+        pop(@Vs);
+    }
+    
+    my $MinVer = $Vs[0];
+    my $MaxVer = $Vs[$#Vs];
+    
+    my $MinRange = undef;
+    my $MaxRange = undef;
+    
+    my $Content = "";
+    my $Val_Pre = $StartVal;
+    
+    foreach (0 .. $#Vs)
+    {
+        my $V = $Vs[$_];
+        
+        my $Val = $Val_Pre + $Scatter->{$V};
+        
+        if(not defined $MinRange) {
+            $MinRange = $Val;
+        }
+        
+        if(not defined $MaxRange) {
+            $MaxRange = $Val;
+        }
+        
+        if($Val<$MinRange) {
+            $MinRange = $Val;
+        }
+        elsif($Val>$MaxRange) {
+            $MaxRange = $Val;
+        }
+        
+        my $V_S = $V;
+        
+        if($V=~tr!\.!!>=2) {
+            $V_S = getMajor($V);
+        }
+        
+        # $V_S=~s/\-rc.*//g;
+        
+        $Content .= $_."  ".$Val;
+        
+        if($_==0 or $_==$#Vs
+        or $_==int($#Vs/2)
+        or $_==int($#Vs/4)
+        or $_==int(3*$#Vs/4)) {
+            $Content .= "  ".$V_S;
+        }
+        $Content .= "\n";
+        
+        $Val_Pre = $Val;
+    }
+    
+    $MinRange -= int($StartVal*5/100);
+    $MaxRange += int($StartVal*5/100);
+    
+    my $Data = $TMP_DIR."/graph.data";
+    
+    writeFile($Data, $Content);
+    
+    my $Title = ""; # Timeline of ABI changes
+    
+    my $GraphPath = "graph/$TARGET_LIB/graph.png";
+    mkpath(getDirname($GraphPath));
+    
+    my $Cmd = "gnuplot -e \"set title \'$Title\';";
+    $Cmd .= "set xlabel '".showTitle()." version';";
+    $Cmd .= "set ylabel 'ABI symbols';";
+    $Cmd .= "set xrange [0:".$#Vs."];";
+    $Cmd .= "set yrange [$MinRange:$MaxRange];";
+    $Cmd .= "set terminal png size 400,300;";
+    $Cmd .= "set output \'$GraphPath\';";
+    $Cmd .= "set nokey;";
+    $Cmd .= "set xtics font 'Times, 12';";
+    $Cmd .= "set ytics font 'Times, 12';";
+    $Cmd .= "set xlabel font 'Times, 12';";
+    $Cmd .= "set ylabel font 'Times, 12';";
+    $Cmd .= "set style line 1 linecolor rgbcolor 'red' linewidth 2;";
+    $Cmd .= "set style increment user;";
+    $Cmd .= "plot \'$Data\' using 2:xticlabels(3) with lines\"";
+    
+    system($Cmd);
+    unlink($Data);
 }
 
 sub findObjects($)
 {
     my $Dir = $_[0];
     
-    my @Files = findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    my @Files = ();
+    
+    if($Profile->{"Mode"} eq "Kernel")
+    {
+        @Files = findFiles($Dir, "f", ".*\\.ko");
+        @Files = (@Files, findFiles($Dir, "f", "", "vmlinux"));
+    }
+    else {
+        @Files = findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    }
+    
     my @Res = ();
     
     foreach my $F (@Files)
@@ -563,6 +751,10 @@ sub findHeaders($)
 
 sub detectSoname($)
 {
+    if($Profile->{"Mode"} eq "Kernel") {
+        return 0;
+    }
+    
     my $V = $_[0];
     
     if(not $Rebuild)
@@ -641,18 +833,30 @@ sub detectSoname($)
     $DB->{"Sover"}{$V} = $Sover;
 }
 
-sub skipLib($)
+sub skipHeader($) {
+    return skipFile($_[0], "SkipHeaders");
+}
+
+sub skipLib($) {
+    return skipFile($_[0], "SkipObjects");
+}
+
+sub skipFile($$)
 {
-    my $Path = $_[0];
+    my ($Path, $Tag) = @_;
     
-    if(defined $Profile->{"SkipObjects"})
+    if(defined $Profile->{$Tag})
     {
         my $Name = getFilename($Path);
-        my @Skip = @{$Profile->{"SkipObjects"}};
+        my @Skip = @{$Profile->{$Tag}};
         
         foreach my $L (@Skip)
         {
-            if($L=~/\/\Z/)
+            if($L eq $Name)
+            { # exact match
+                return 1;
+            }
+            elsif($L=~/\/\Z/)
             { # directory
                 if($Path=~/\Q$L\E/) {
                     return 1;
@@ -666,7 +870,7 @@ sub skipLib($)
                         return 1;
                     }
                 }
-                else
+                elsif($Tag eq "SkipObjects")
                 { # short name
                     $Name=~s/\..+\Z//g;
                     $L=~s/\..+\Z//g;
@@ -1177,8 +1381,14 @@ sub createABIDump($)
         
         if(not $Profile->{"PrivateABI"})
         { # set "PrivateABI":1 in the profile to check all symbols
-            $Cmd .= " -public-headers \"$Installed\"";
-            $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
+            if($Profile->{"Mode"} eq "Kernel") {
+                $Cmd .= " -kernel-export";
+            }
+            else
+            {
+                $Cmd .= " -public-headers \"$Installed\"";
+                $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
+            }
         }
         
         if($ABI_DUMPER_EE)
@@ -1197,10 +1407,14 @@ sub createABIDump($)
             my $Dump = eval(readFile($ABIDump));
             $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $Dump->{"Language"};
             
+            my $TotalSymbols = keys(%{$Dump->{"SymbolInfo"}});
+            $DB->{"ABIDump"}{$V}{$Md5}{"TotalSymbols"} = $TotalSymbols;
+            
             my @Meta = ();
             
             push(@Meta, "\"Object\": \"".$RPath."\"");
             push(@Meta, "\"Lang\": \"".$Dump->{"Language"}."\"");
+            push(@Meta, "\"TotalSymbols\": \"".$TotalSymbols."\"");
             push(@Meta, "\"PublicABI\": \"1\"");
             
             writeFile($Dir."/".$Md5."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
@@ -1221,7 +1435,7 @@ sub getObjectName($$)
     
     if($T eq "Short")
     {
-        if($Name=~/\A(.+)\.so[\d\.]*\Z/) {
+        if($Name=~/\A(.+)\.(so|ko)[\d\.]*\Z/) {
             return $1;
         }
     }
@@ -1239,13 +1453,6 @@ sub getObjectName($$)
     }
     
     return undef;
-}
-
-sub createABIDiff($$)
-{
-    my ($V1, $V2) = @_;
-    
-    # TODO
 }
 
 sub createABIView($)
@@ -1382,6 +1589,26 @@ sub createABIReport($$)
     
     printMsg("INFO", "Creating objects ABI report between $V1 and $V2");
     
+    my $Cols = 3;
+    my $ABIDiff = $Profile->{"Versions"}{$V2}{"ABIDiff"};
+    
+    if($ABIDiff eq "On")
+    {
+        if(not getToolVer($ABI_VIEWER))
+        {
+            printMsg("ERROR", "ABI Viewer is not installed");
+            return 0;
+        }
+        
+        if(not $ABI_DUMPER_EE)
+        {
+            printMsg("ERROR", "ABI Dumper EE is not installed");
+            return 0;
+        }
+        
+        $Cols-=1;
+    }
+    
     if(not defined $DB->{"ABIDump"}{$V1}) {
         createABIDump($V1);
     }
@@ -1401,13 +1628,6 @@ sub createABIReport($$)
     
     if(not $D1 or not $D2) {
         return 0;
-    }
-    
-    # Remove old reports
-    my $CDir = "compat_report/$TARGET_LIB/$V1/$V2";
-    
-    if(-d $CDir) {
-        rmtree($CDir);
     }
     
     my (@Objects1, @Objects2) = ();
@@ -1430,8 +1650,18 @@ sub createABIReport($$)
         push(@Objects2, $Obj);
     }
     
-    @Objects1 = sort {lc($a) cmp lc($b)} @Objects1;
-    @Objects2 = sort {lc($a) cmp lc($b)} @Objects2;
+    if($Profile->{"Mode"} eq "Kernel")
+    { # move vmlinux to the top of the report
+        @Objects1 = sort {lc(getFilename($a)) cmp lc(getFilename($b))} @Objects1;
+        @Objects2 = sort {lc(getFilename($a)) cmp lc(getFilename($b))} @Objects2;
+        
+        @Objects1 = sort {($b eq "vmlinux") cmp ($a eq "vmlinux")} @Objects1;
+    }
+    else
+    {
+        @Objects1 = sort {lc($a) cmp lc($b)} @Objects1;
+        @Objects2 = sort {lc($a) cmp lc($b)} @Objects2;
+    }
     
     my %SonameObject2 = ();
     my %ShortName2 = ();
@@ -1585,12 +1815,29 @@ sub createABIReport($$)
         }
     }
     
-    foreach my $Object1 (@Objects)
+    if(not $ObjectsReport)
     {
-        if(skipLib($Object1)) {
-            next;
+        if($Rebuild)
+        {
+            # Remove old reports
+            my $CDir = "compat_report/$TARGET_LIB/$V1/$V2";
+            
+            if(-d $CDir) {
+                rmtree($CDir);
+            }
         }
-        compareABIs($V1, $V2, $Object1, $Mapped{$Object1});
+        
+        foreach my $Object1 (@Objects)
+        {
+            if(skipLib($Object1)) {
+                next;
+            }
+            compareABIs($V1, $V2, $Object1, $Mapped{$Object1});
+            
+            if($ABIDiff eq "On") {
+                diffABIs($V1, $V2, $Object1, $Mapped{$Object1});
+            }
+        }
     }
     
     my $Report = "";
@@ -1603,12 +1850,17 @@ sub createABIReport($$)
     $Report .= "<table class='summary'>\n";
     $Report .= "<tr>";
     $Report .= "<th>Object</th>\n";
-    $Report .= "<th>Backward<br/>Compatibility</th>\n";
-    if($Profile->{"ShowTotalProblems"}) {
-        $Report .= "<th>Total<br/>Problems</th>\n";
+    if($Profile->{"CompatRate"} ne "Off") {
+        $Report .= "<th>Backward<br/>Compatibility</th>\n";
     }
     $Report .= "<th>Added<br/>Symbols</th>\n";
     $Report .= "<th>Removed<br/>Symbols</th>\n";
+    if($Profile->{"ShowTotalProblems"}) {
+        $Report .= "<th>Total<br/>Changes</th>\n";
+    }
+    if($ABIDiff eq "On") {
+        $Report .= "<th title='Generated by the ABI Viewer tool from ".$HomePage."'>ABI<br/>Diff*</th>\n";
+    }
     $Report .= "</tr>\n";
     
     foreach my $Object2 (@Objects2)
@@ -1633,7 +1885,13 @@ sub createABIReport($$)
         $Report .= "<tr>\n";
         
         my $Name = $Object1;
-        $Name=~s/\Alib(64|32|)\///;
+        
+        if($Profile->{"Mode"} eq "Kernel") {
+            $Name=~s/\A.*\///g;
+        }
+        else {
+            $Name=~s/\Alib(64|32|)\///;
+        }
         
         if($Mapped{$Object1})
         {
@@ -1647,7 +1905,7 @@ sub createABIReport($$)
             {
                 $Name .= "<br/>";
                 $Name .= "<br/>";
-                $Name .= "<span class='incompatible'>(changed file name from<br/>\"$Object1\"<br/>to<br/>\"".$RenamedObject{$Object1}."\")</span>";
+                $Name .= "<span class='incompatible'>(changed file name from<br/>\"".getFilename($Object1)."\"<br/>to<br/>\"".$RenamedObject{$Object1}."\")</span>";
             }
         }
         
@@ -1665,53 +1923,64 @@ sub createABIReport($$)
                 my $RemovedSymbols = $ABIReport_D->{"Removed"};
                 my $TotalProblems = $ABIReport_D->{"TotalProblems"};
                 
-                my $CClass = "ok";
-                
-                if($BC_D eq "100")
+                if($Profile->{"CompatRate"} ne "Off")
                 {
-                    if($TotalProblems) {
-                        $CClass = "warning";
+                    my $CClass = "ok";
+                    if($BC_D eq "100")
+                    {
+                        if($TotalProblems) {
+                            $CClass = "warning";
+                        }
                     }
-                }
-                else
-                {
-                    if(int($BC_D)>=90) {
-                        $CClass = "warning";
+                    else
+                    {
+                        if(int($BC_D)>=90) {
+                            $CClass = "warning";
+                        }
+                        else {
+                            $CClass = "incompatible";
+                        }
                     }
-                    else {
-                        $CClass = "incompatible";
-                    }
-                }
-                
-                $Report .= "<td class=\'$CClass\'><a href='../../../../".$ABIReport_D->{"Path"}."'>".formatNum($BC_D)."%</a></td>\n";
-                
-                if($Profile->{"ShowTotalProblems"})
-                {
-                    if($TotalProblems) {
-                        $Report .= "<td class=\'$CClass\'><a class='num' href='../../../../".$ABIReport_D->{"Path"}."'>$TotalProblems</td>\n";
-                    }
-                    else {
-                        $Report .= "<td class='ok'>0</td>\n";
-                    }
+                    $Report .= "<td class=\'$CClass\'><a href='../../../../".$ABIReport_D->{"Path"}."'>".formatNum($BC_D)."%</a></td>\n";
                 }
                 
                 if($AddedSymbols) {
-                    $Report .= "<td class='added'><a class='num' href='../../../../".$ABIReport_D->{"Path"}."#Added'>$AddedSymbols new</td>\n";
+                    $Report .= "<td class='added'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."#Added'>".$AddedSymbols.$LinkNew."</a></td>\n";
                 }
                 else {
                     $Report .= "<td class='ok'>0</td>\n";
                 }
                 
                 if($RemovedSymbols) {
-                    $Report .= "<td class='removed'><a class='num' href='../../../../".$ABIReport_D->{"Path"}."#Removed'>$RemovedSymbols removed</td>\n";
+                    $Report .= "<td class='removed'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."#Removed'>".$RemovedSymbols.$LinkRemoved."</a></td>\n";
                 }
                 else {
                     $Report .= "<td class='ok'>0</td>\n";
                 }
+                
+                if($Profile->{"ShowTotalProblems"})
+                {
+                    if($TotalProblems) {
+                        $Report .= "<td class=\'warning\'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."'>$TotalProblems</a></td>\n";
+                    }
+                    else {
+                        $Report .= "<td class='ok'>0</td>\n";
+                    }
+                }
+                
+                if($ABIDiff eq "On")
+                {
+                    if(my $DiffPath = $DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5}{"Path"}) {
+                        $Report .= "<td><a href='../../../../".$DiffPath."'>diff</a></td>\n";
+                    }
+                    else {
+                        $Report .= "<td>N/A</td>\n";
+                    }
+                }
             }
             else
             {
-                foreach (1 .. 3) {
+                foreach (1 .. $Cols) {
                     $Report .= "<td>N/A</td>\n";
                 }
             }
@@ -1737,7 +2006,7 @@ sub createABIReport($$)
     
     writeFile($Output, $Report);
     
-    my ($Affected_T, $AddedSymbols_T, $RemovedSymbols_T, $TotalProblems_T) = ();
+    my ($Affected_T, $AddedSymbols_T, $RemovedSymbols_T, $TotalProblems_T) = (0, 0, 0, 0);
     
     my $TotalFuncs = 0;
     
@@ -1747,11 +2016,15 @@ sub createABIReport($$)
         if(defined $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5})
         {
             my $ABIReport_D = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5};
+            my $Dump = $DB->{"ABIDump"}{$V1}{getMd5($Object)};
             
-            my $Dump = $DB->{"ABIDump"}{$V1}{getMd5($Object)}{"Path"};
-            my $DumpContent = eval(readFile($Dump));
+            if(not defined $Dump->{"TotalSymbols"})
+            { # support for old data
+                print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V1) ...\n";
+                $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+            }
             
-            my $Funcs = keys(%{$DumpContent->{"SymbolInfo"}});
+            my $Funcs = $Dump->{"TotalSymbols"};
             
             $Affected_T += $ABIReport_D->{"Affected"} * $Funcs;
             $AddedSymbols_T += $ABIReport_D->{"Added"};
@@ -1774,6 +2047,34 @@ sub createABIReport($$)
     
     $BC = formatNum($BC);
     
+    my ($AddedByObjects_T, $RemovedByObjects_T) = (0, 0);
+    
+    foreach my $Object (keys(%Added))
+    {
+        my $Dump = $DB->{"ABIDump"}{$V2}{getMd5($Object)};
+        
+        if(not defined $Dump->{"TotalSymbols"})
+        { # support for old data
+            print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V2) ...\n";
+            $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+        }
+        
+        $AddedByObjects_T += $Dump->{"TotalSymbols"};
+    }
+    
+    foreach my $Object (keys(%Removed))
+    {
+        my $Dump = $DB->{"ABIDump"}{$V1}{getMd5($Object)};
+        
+        if(not defined $Dump->{"TotalSymbols"})
+        { # support for old data
+            print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V1) ...\n";
+            $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+        }
+        
+        $RemovedByObjects_T += $Dump->{"TotalSymbols"};
+    }
+    
     $DB->{"ABIReport"}{$V1}{$V2}{"Path"} = $Output;
     $DB->{"ABIReport"}{$V1}{$V2}{"BC"} = $BC;
     $DB->{"ABIReport"}{$V1}{$V2}{"Added"} = $AddedSymbols_T;
@@ -1782,6 +2083,8 @@ sub createABIReport($$)
     
     $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsAdded"} = keys(%Added);
     $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsRemoved"} = keys(%Removed);
+    $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsAddedSymbols"} = $AddedByObjects_T;
+    $DB->{"ABIReport"}{$V1}{$V2}{"ObjectsRemovedSymbols"} = $RemovedByObjects_T;
     $DB->{"ABIReport"}{$V1}{$V2}{"ChangedSoname"} = keys(%ChangedSoname);
     $DB->{"ABIReport"}{$V1}{$V2}{"TotalObjects"} = $#Objects1 + 1;
     
@@ -1790,8 +2093,12 @@ sub createABIReport($$)
     push(@Meta, "\"BC\": \"".$BC."\"");
     push(@Meta, "\"Added\": ".$AddedSymbols_T);
     push(@Meta, "\"Removed\": ".$RemovedSymbols_T);
+    push(@Meta, "\"TotalProblems\": ".$TotalProblems_T);
+    
     push(@Meta, "\"ObjectsAdded\": ".keys(%Added));
     push(@Meta, "\"ObjectsRemoved\": ".keys(%Removed));
+    push(@Meta, "\"ObjectsAddedSymbols\": ".$AddedByObjects_T);
+    push(@Meta, "\"ObjectsRemovedSymbols\": ".$RemovedByObjects_T);
     push(@Meta, "\"ChangedSoname\": ".keys(%ChangedSoname));
     push(@Meta, "\"TotalObjects\": ".($#Objects1 + 1));
     
@@ -1847,9 +2154,42 @@ sub createABIView_Object($$)
     
     my $Cmd = $ABI_VIEWER." -skip-std -vnum \"$V\" -output \"$Dir\" \"".getDirname($Dump)."\"";
     
-    my $Log = `$Cmd`; # execute
+    qx/$Cmd/; # execute
     
     $DB->{"ABIView_D"}{$V}{$Md5}{"Path"} = $Output;
+}
+
+sub diffABIs($$$$)
+{
+    my ($V1, $V2, $Obj1, $Obj2) = @_;
+    my $Md5 = getMd5($Obj1, $Obj2);
+    
+    if(not $Rebuild)
+    {
+        if(defined $DB->{"ABIDiff_D"}{$V1}{$V2}
+        and defined $DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5})
+        {
+            if(not updateRequired($V2)) {
+                return 0;
+            }
+        }
+    }
+    
+    delete($DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5}); # empty cache
+    
+    printMsg("INFO", "Creating ABI diff for $Obj1 ($V1) and $Obj2 ($V2)");
+    
+    my $Dump1 = $DB->{"ABIDump"}{$V1}{getMd5($Obj1)};
+    my $Dump2 = $DB->{"ABIDump"}{$V2}{getMd5($Obj2)};
+    
+    my $Dir = "abi_diff/$TARGET_LIB/$V1/$V2/$Md5";
+    my $Output = $Dir."/symbols.html";
+    
+    my $Cmd = $ABI_VIEWER." -diff -skip-std -vnum1 \"$V1\" -vnum2 \"$V2\" -output \"$Dir\" \"".getDirname($Dump1->{"Path"})."\" \"".getDirname($Dump2->{"Path"})."\"";
+    
+    qx/$Cmd/; # execute
+    
+    $DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5}{"Path"} = $Output;
 }
 
 sub compareABIs($$$$)
@@ -1872,6 +2212,9 @@ sub compareABIs($$$$)
     delete($DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}); # empty cache
     
     printMsg("INFO", "Creating ABICC report for $Obj1 ($V1) and $Obj2 ($V2)");
+    
+    my $TmpDir = $TMP_DIR."/abicc/";
+    mkpath($TmpDir);
     
     my $Dump1 = $DB->{"ABIDump"}{$V1}{getMd5($Obj1)};
     my $Dump2 = $DB->{"ABIDump"}{$V2}{getMd5($Obj2)};
@@ -1903,10 +2246,13 @@ sub compareABIs($$$$)
         createABIDump($V2);
     }
     
-    my $Dir = "compat_report/$TARGET_LIB/$V1/$V2";
-    $Dir .= "/".$Md5;
+    my $Dir = "compat_report/$TARGET_LIB/$V1/$V2/$Md5";
     my $Output = $Dir."/abi_compat_report.html";
+    
     my $Module = getObjectName(getFilename($Obj1), "Short");
+    if(not $Module) {
+        $Module = getFilename($Obj1);
+    }
     
     my $Cmd = $ABI_CC." -l \"$Module\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
     
@@ -1926,7 +2272,13 @@ sub compareABIs($$$$)
         $Cmd .= " -skip-internal-types \"$SkipInternalTypes\"";
     }
     
-    my $Log = `$Cmd`; # execute
+    if(my $SkipHeaders = $Profile->{"SkipHeaders"})
+    {
+        writeFile($TmpDir."/headers.list", join("\n", @{$SkipHeaders}));
+        $Cmd .= " -skip-headers \"$TmpDir/headers.list\"";
+    }
+    
+    qx/$Cmd/; # execute
     
     my ($Affected, $Added, $Removed) = ();
     my $Total = 0;
@@ -1969,6 +2321,8 @@ sub compareABIs($$$$)
     push(@Meta, "\"Object2\": \"".$Obj2."\"");
     
     writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
+    
+    rmtree($TmpDir);
 }
 
 sub createPkgdiff($$)
@@ -2011,6 +2365,34 @@ sub createPkgdiff($$)
     }
 }
 
+sub getMaxPrefix(@)
+{
+    my @Paths = @_;
+    my %Prefix = ();
+    
+    foreach my $Path (@Paths)
+    {
+        my $P = getDirname($Path);
+        do {
+            $Prefix{$P}+=1;
+        }
+        while($P = getDirname($P));
+    }
+    
+    my @ByCount = sort {$Prefix{$b}<=>$Prefix{$a}} keys(%Prefix);
+    my $Max = $Prefix{$ByCount[0]};
+    
+    foreach my $P (sort {length($b)<=>length($a)} keys(%Prefix))
+    {
+        if($Prefix{$P}==$Max)
+        {
+            return $P;
+        }
+    }
+    
+    return undef;
+}
+
 sub diffHeaders($$)
 {
     my ($V1, $V2) = @_;
@@ -2051,41 +2433,93 @@ sub diffHeaders($$)
         return 0;
     }
     
-    my @Files1 = findFiles($I_Dir1, "f");
-    my @Files2 = findFiles($I_Dir2, "f");
+    my @AllFiles1 = findFiles($I_Dir1, "f");
+    my @AllFiles2 = findFiles($I_Dir2, "f");
     
-    my %Files1 = ();
-    my %Files2 = ();
+    my @Files1 = ();
+    my @Files2 = ();
     
-    foreach my $Path (@Files1)
-    {
-        if($Path=~/\A\Q$I_Dir1\E\/*(.+?)\Z/) {
-            $Files1{$1} = $Path;
-        }
-    }
-    
-    foreach my $Path (@Files2)
-    {
-        if($Path=~/\A\Q$I_Dir2\E\/*(.+?)\Z/) {
-            $Files2{$1} = $Path;
-        }
-    }
-    
-    my $Dir = $TMP_DIR."/diff/";
-    
-    my @Reports = ();
-    
-    foreach my $Path (sort {lc($a) cmp lc($b)} keys(%Files1))
+    foreach my $Path (@AllFiles1)
     {
         if(not isHeader($Path)) {
             next;
         }
         
+        push(@Files1, $Path);
+    }
+    
+    foreach my $Path (@AllFiles2)
+    {
+        if(not isHeader($Path)) {
+            next;
+        }
+        
+        push(@Files2, $Path);
+    }
+    
+    my %Files1 = ();
+    my %Files2 = ();
+    
+    my $Prefix1 = getMaxPrefix(@Files1);
+    if(not $Prefix1) {
+        $Prefix1 = $I_Dir1;
+    }
+    
+    my $Prefix2 = getMaxPrefix(@Files2);
+    if(not $Prefix2) {
+        $Prefix2 = $I_Dir2;
+    }
+    
+    my %Names1 = ();
+    my %Names2 = ();
+    
+    foreach my $Path (@Files1)
+    {
+        if($Path=~/\A\Q$Prefix1\E\/*(.+?)\Z/) {
+            $Files1{$1} = $Path;
+        }
+        
+        $Names1{getFilename($Path)}{$Path} = 1;
+    }
+    
+    foreach my $Path (@Files2)
+    {
+        if($Path=~/\A\Q$Prefix2\E\/*(.+?)\Z/) {
+            $Files2{$1} = $Path;
+        }
+        
+        $Names2{getFilename($Path)}{$Path} = 1;
+    }
+    
+    my $TmpDir = $TMP_DIR."/diff/";
+    mkpath($TmpDir);
+    
+    my @Reports = ();
+    
+    foreach my $Path (sort {lc($a) cmp lc($b)} keys(%Files1))
+    {
         my $Path1 = $Files1{$Path};
         my $Path2 = undef;
         
         if(defined $Files2{$Path}) {
             $Path2 = $Files2{$Path};
+        }
+        
+        if(not defined $Path2)
+        {
+            my $Name = getFilename($Path);
+            if(defined $Names2{$Name})
+            {
+                my @Paths2 = keys(%{$Names2{$Name}});
+                
+                if($#Paths2==0) {
+                    $Path2 = $Paths2[0];
+                }
+                else
+                {
+                    # TODO
+                }
+            }
         }
         
         if(not defined $Path2) {
@@ -2099,13 +2533,13 @@ sub diffHeaders($$)
             }
         }
         
-        mkpath(getDirname($TMP_DIR."/".$Path));
+        mkpath(getDirname($TmpDir."/".$Path));
         
-        my $Cmd_R = $RFCDIFF." --width 75 --stdout \"$Path1\" \"$Path2\" >$TMP_DIR/$Path 2>/dev/null";
+        my $Cmd_R = $RFCDIFF." --width 75 --stdout \"$Path1\" \"$Path2\" >$TmpDir/$Path 2>/dev/null";
         qx/$Cmd_R/; # execute
         
-        if(-s "$TMP_DIR/$Path") {
-            push(@Reports, "$TMP_DIR/$Path");
+        if(-s "$TmpDir/$Path") {
+            push(@Reports, "$TmpDir/$Path");
         }
     }
     
@@ -2123,7 +2557,7 @@ sub diffHeaders($$)
         }
         
         my $RPath = $Path;
-        $RPath=~s/\A$TMP_DIR\///;
+        $RPath=~s/\A$TmpDir\///;
         
         my $File = getFilename($Path);
         
@@ -2164,7 +2598,7 @@ sub diffHeaders($$)
     
     writeFile($Output."/meta.json", "{\n  \"Total\": $Total\n}");
     
-    rmtree($Dir);
+    rmtree($TmpDir);
 }
 
 sub showTitle()
@@ -2204,23 +2638,37 @@ sub getHead($)
     
     my $UrlPr = getTop($Sel);
     
+    my $ReportHeader = "ABI<br/>Tracker";
+    if(defined $Profile->{"ReportHeader"}) {
+        $ReportHeader = $Profile->{"ReportHeader"};
+    }
+    
     my $Head = "";
     
     $Head .= "<table cellpadding='0' cellspacing='0'>";
     $Head .= "<tr>";
     
     $Head .= "<td align='center'>";
-    $Head .= "<h1 class='tool'><a title=\'Home: ABI tracker for ".showTitle()."\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>ABI<br/>Tracker</a></h1>";
+    
+    if($TARGET_LIB) {
+        $Head .= "<h1 class='tool'><a title=\'Home: ABI tracker for ".showTitle()."\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>".$ReportHeader."</a></h1>";
+    }
+    else {
+        $Head .= "<h1 class='tool'><a title='Home: ABI tracker' href='' class='tool'>".$ReportHeader."</a></h1>";
+    }
     $Head .= "</td>";
     
-    $Head .= "<td width='30px;'>";
-    $Head .= "</td>";
-    
-    if($Sel ne "global_index")
+    if(not defined $Profile->{"ReportHeader"})
     {
-        $Head .= "<td>";
-        $Head .= "<h1>(".showTitle().")</h1>";
+        $Head .= "<td width='30px;'>";
         $Head .= "</td>";
+        
+        if($Sel ne "global_index")
+        {
+            $Head .= "<td>";
+            $Head .= "<h1>(".showTitle().")</h1>";
+            $Head .= "</td>";
+        }
     }
     
     $Head .= "</tr></table>";
@@ -2286,19 +2734,27 @@ sub createTimeline()
     writeCss();
     
     my $Title = showTitle().": API/ABI changes timeline";
-    my $Desc = "API/ABI compatibility analysis reports for ".$TARGET_LIB;
+    my $Desc = "API/ABI compatibility analysis reports for ".showTitle();
     my $Content = composeHTML_Head($Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, getTop("timeline"), "report.css", "");
     $Content .= "<body>\n";
     
     my @Versions = getVersionsList();
     
+    my $CompatRate = "On";
+    my $Soname = "On";
     my $Changelog = "Off";
     my $HeadersDiff = "Off";
     my $PkgDiff = "Off";
     
+    if($Profile->{"CompatRate"} eq "Off") {
+        $CompatRate = "Off";
+    }
+    if($Profile->{"Soname"} eq "Off") {
+        $Soname = "Off";
+    }
+    
     # High-detailed analysis for Enterprise usage (non-free)
     my $ABIView = "Off";
-    my $ABIDiff = "Off";
     foreach my $V (@Versions)
     {
         if($Profile->{"Versions"}{$V}{"Changelog"} ne "Off")
@@ -2320,36 +2776,74 @@ sub createTimeline()
         {
             $ABIView = "On";
         }
-        
-        if($Profile->{"Versions"}{$V}{"ABIDiff"} eq "On")
-        {
-            $ABIDiff = "On";
-        }
+    }
+    
+    my $Cols = 10;
+    
+    if($CompatRate eq "Off") {
+        $Cols-=1;
+    }
+    
+    if($Soname eq "Off") {
+        $Cols-=1;
+    }
+    
+    if($Changelog eq "Off") {
+        $Cols-=1;
+    }
+    
+    if($HeadersDiff eq "Off") {
+        $Cols-=1;
+    }
+    
+    if($PkgDiff eq "Off") {
+        $Cols-=1;
+    }
+    
+    if($ABIView eq "Off") {
+        $Cols-=1;
     }
     
     $Content .= getHead("timeline");
     
-    $Content .= "<h1>API/ABI changes timeline</h1>\n";
+    my $ContentHeader = "API/ABI changes timeline";
+    if(defined $Profile->{"ContentHeader"}) {
+        $ContentHeader = $Profile->{"ContentHeader"};
+    }
+    
+    $Content .= "<h1>".$ContentHeader."</h1>\n";
     $Content .= "<br/>";
     $Content .= "<br/>";
+    
+    my $GraphPath = "graph/$TARGET_LIB/graph.png";
+    
+    if(-f $GraphPath) {
+        $Content .= "<table cellpadding='0' cellspacing='0'><tr><td valign='top'>\n";
+    }
     
     $Content .= "<table cellpadding='3' class='summary'>\n";
     
     $Content .= "<tr>\n";
     $Content .= "<th>Version</th>\n";
     $Content .= "<th>Date</th>\n";
-    $Content .= "<th>Soname</th>\n";
+    
+    if($Soname ne "Off") {
+        $Content .= "<th>Soname</th>\n";
+    }
     
     if($Changelog ne "Off") {
         $Content .= "<th>Change<br/>Log</th>\n";
     }
     
-    $Content .= "<th>Backward<br/>Compatibility</th>\n";
-    if($Profile->{"ShowTotalProblems"}) {
-        $Content .= "<th>Total<br/>Problems</th>\n";
+    if($CompatRate ne "Off") {
+        $Content .= "<th>Backward<br/>Compatibility</th>\n";
     }
+    
     $Content .= "<th>Added<br/>Symbols</th>\n";
     $Content .= "<th>Removed<br/>Symbols</th>\n";
+    if($Profile->{"ShowTotalProblems"}) {
+        $Content .= "<th>Total<br/>Changes</th>\n";
+    }
     
     if($HeadersDiff ne "Off") {
         $Content .= "<th>Headers<br/>Diff</th>\n";
@@ -2361,9 +2855,6 @@ sub createTimeline()
     
     if($ABIView ne "Off") {
         $Content .= "<th title='Generated by the ABI Viewer tool from ".$HomePage."'>ABI<br/>View*</th>\n";
-    }
-    if($ABIDiff ne "Off") {
-        $Content .= "<th title='Generated by the ABI Viewer tool from ".$HomePage."'>ABI<br/>Diff*</th>\n";
     }
     
     $Content .= "</tr>\n";
@@ -2381,7 +2872,6 @@ sub createTimeline()
         my $PackageDiff = undef;
         
         my $ABIViewReport = undef;
-        my $ABIDiffReport = undef;
         
         if(defined $DB->{"ABIReport"} and defined $DB->{"ABIReport"}{$O_V}
         and defined $DB->{"ABIReport"}{$O_V}{$V}) {
@@ -2398,10 +2888,6 @@ sub createTimeline()
         if(defined $DB->{"ABIView"} and defined $DB->{"ABIView"}{$V}) {
             $ABIViewReport = $DB->{"ABIView"}{$V};
         }
-        if(defined $DB->{"ABIDiff"} and defined $DB->{"ABIDiff"}{$V}
-        and defined $DB->{"ABIDiff"}{$O_V}{$V}) {
-            $ABIDiffReport = $DB->{"ABIDiff"}{$O_V}{$V};
-        }
         
         my $Date = "N/A";
         my $Sover = "N/A";
@@ -2414,11 +2900,19 @@ sub createTimeline()
             $Sover = $DB->{"Sover"}{$V};
         }
         
-        $Content .= "<tr>";
+        my $Anchor = $V;
+        if($V ne "current") {
+            $Anchor = "v".$Anchor;
+        }
         
-        $Content .= "<td>$V</td>\n";
+        $Content .= "<tr id='".$Anchor."'>";
+        
+        $Content .= "<td>".$V."</td>\n";
         $Content .= "<td>".showDate($V, $Date)."</td>\n";
-        $Content .= "<td>".$Sover."</td>\n";
+        
+        if($Soname ne "Off") {
+            $Content .= "<td>".$Sover."</td>\n";
+        }
         
         if($Changelog ne "Off")
         {
@@ -2436,73 +2930,54 @@ sub createTimeline()
             }
         }
         
-        if(defined $ABIReport)
-        {
-            my $BC = $ABIReport->{"BC"};
-            my $ObjectsAdded = $ABIReport->{"ObjectsAdded"};
-            my $ObjectsRemoved = $ABIReport->{"ObjectsRemoved"};
-            my $ChangedSoname = $ABIReport->{"ChangedSoname"};
-            my $TotalProblems = $ABIReport->{"TotalProblems"};
-            
-            my @Note = ();
-            
-            if($ChangedSoname) {
-                push(@Note, "<span class='incompatible'>changed SONAME</span>");
-            }
-            
-            if($ObjectsAdded) {
-                push(@Note, "<span class='added'>added $ObjectsAdded object".getS($ObjectsAdded)."</span>");
-            }
-            
-            if($ObjectsRemoved) {
-                push(@Note, "<span class='incompatible'>removed $ObjectsRemoved object".getS($ObjectsRemoved)."</span>");
-            }
-            
-            my $CClass = "ok";
-            if($BC ne "100")
-            {
-                if(int($BC)>=90) {
-                    $CClass = "warning";
-                }
-                else {
-                    $CClass = "incompatible";
-                }
-            }
-            elsif($TotalProblems) {
-                $CClass = "warning";
-            }
-            
-            my $BC_Summary = "<a href='../../".$ABIReport->{"Path"}."'>$BC%</a>";
-            
-            if(@Note)
-            {
-                $BC_Summary .= "<br/>\n";
-                $BC_Summary .= "<br/>\n";
-                $BC_Summary .= "<span class='note'>".join("<br/>", @Note)."</span>\n";
-            }
-            
-            $Content .= "<td class=\'$CClass\'>$BC_Summary</td>\n";
-        }
-        else {
-            $Content .= "<td>N/A</td>\n";
-        }
-        
-        if($Profile->{"ShowTotalProblems"})
+        if($CompatRate ne "Off")
         {
             if(defined $ABIReport)
             {
-                if(my $TotalProblems = $ABIReport->{"TotalProblems"})
+                my $BC = $ABIReport->{"BC"};
+                my $ObjectsAdded = $ABIReport->{"ObjectsAdded"};
+                my $ObjectsRemoved = $ABIReport->{"ObjectsRemoved"};
+                my $ChangedSoname = $ABIReport->{"ChangedSoname"};
+                my $TotalProblems = $ABIReport->{"TotalProblems"};
+                
+                my @Note = ();
+                
+                if($ChangedSoname) {
+                    push(@Note, "<span class='incompatible'>changed SONAME</span>");
+                }
+                
+                if($ObjectsAdded) {
+                    push(@Note, "<span class='added'>added $ObjectsAdded object".getS($ObjectsAdded)."</span>");
+                }
+                
+                if($ObjectsRemoved) {
+                    push(@Note, "<span class='incompatible'>removed $ObjectsRemoved object".getS($ObjectsRemoved)."</span>");
+                }
+                
+                my $CClass = "ok";
+                if($BC ne "100")
                 {
-                    my $TClass = "incompatible";
-                    if(int($ABIReport->{"BC"})>=90) {
-                        $TClass = "warning";
+                    if(int($BC)>=90) {
+                        $CClass = "warning";
                     }
-                    
-                    $Content .= "<td class=\'$TClass\'><a class='num' href='../../".$ABIReport->{"Path"}."'>$TotalProblems</a></td>\n";
+                    else {
+                        $CClass = "incompatible";
+                    }
                 }
-                else {
-                    $Content .= "<td class='ok'>0</td>\n";
+                elsif($TotalProblems) {
+                    $CClass = "warning";
                 }
+                
+                my $BC_Summary = "<a href='../../".$ABIReport->{"Path"}."'>$BC%</a>";
+                
+                if(@Note)
+                {
+                    $BC_Summary .= "<br/>\n";
+                    $BC_Summary .= "<br/>\n";
+                    $BC_Summary .= "<span class='note'>".join("<br/>", @Note)."</span>\n";
+                }
+                
+                $Content .= "<td class=\'$CClass\'>$BC_Summary</td>\n";
             }
             else {
                 $Content .= "<td>N/A</td>\n";
@@ -2512,7 +2987,7 @@ sub createTimeline()
         if(defined $ABIReport)
         {
             if(my $Added = $ABIReport->{"Added"}) {
-                $Content .= "<td class='added'><a class='num' href='../../".$ABIReport->{"Path"}."'>$Added new</a></td>\n";
+                $Content .= "<td class='added'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>".$Added.$LinkNew."</a></td>\n";
             }
             else {
                 $Content .= "<td class='ok'>0</td>\n";
@@ -2525,7 +3000,7 @@ sub createTimeline()
         if(defined $ABIReport)
         {
             if(my $Removed = $ABIReport->{"Removed"}) {
-                $Content .= "<td class='removed'><a class='num' href='../../".$ABIReport->{"Path"}."'>$Removed removed</a></td>\n";
+                $Content .= "<td class='removed'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>".$Removed.$LinkRemoved."</a></td>\n";
             }
             else {
                 $Content .= "<td class='ok'>0</td>\n";
@@ -2533,6 +3008,22 @@ sub createTimeline()
         }
         else {
             $Content .= "<td>N/A</td>\n";
+        }
+        
+        if($Profile->{"ShowTotalProblems"})
+        {
+            if(defined $ABIReport)
+            {
+                if(my $TotalProblems = $ABIReport->{"TotalProblems"}) {
+                    $Content .= "<td class=\'warning\'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>$TotalProblems</a></td>\n";
+                }
+                else {
+                    $Content .= "<td class='ok'>0</td>\n";
+                }
+            }
+            else {
+                $Content .= "<td>N/A</td>\n";
+            }
         }
         
         if($HeadersDiff ne "Off")
@@ -2579,17 +3070,12 @@ sub createTimeline()
             }
         }
         
-        if($ABIDiff ne "Off")
-        {
-            if(defined $ABIDiffReport and $Profile->{"Versions"}{$V}{"ABIDiff"} eq "On") {
-                $Content .= "<td><a href='../../".$ABIDiffReport->{"Path"}."'>diff</a></td>\n";
-            }
-            else {
-                $Content .= "<td>N/A</td>\n";
-            }
-        }
-        
         $Content .= "</tr>\n";
+        
+        if(my $Comment = $Profile->{"Versions"}{$V}{"Comment"})
+        {
+            $Content .= "<tr><td class='comment' colspan=\'$Cols\'>NOTE: $Comment</td></tr>\n";
+        }
     }
     
     $Content .= "</table>";
@@ -2606,6 +3092,15 @@ sub createTimeline()
         $Content .= "Maintained by $M. ";
     }
     $Content .= "Last updated on ".localtime($DB->{"Updated"}).".";
+    
+    if(-f $GraphPath)
+    {
+        $Content .= "</td><td width='100%' valign='top' align='left' style='padding-left:4em;'>\n";
+        $Content .= "<img src=\'../../$GraphPath\' alt='Timeline of ABI changes' />\n";
+        $Content .= "</td>\n";
+        $Content .=  "</tr>\n";
+        $Content .= "</table>\n";
+    }
     
     $Content .= getSign("Home");
     
@@ -2782,14 +3277,22 @@ sub checkFiles()
                 my %Info = ();
                 my $Dir = $Dumps."/".$V."/".$Md5;
                 
-                $Info{"Path"} = $Dumps."/".$V."/".$Md5."/ABI.dump";
+                $Info{"Path"} = $Dir."/ABI.dump";
                 
                 my $Meta = readProfile(readFile($Dir."/meta.json"));
                 $Info{"Object"} = $Meta->{"Object"};
                 $Info{"Lang"} = $Meta->{"Lang"};
+                $Info{"TotalSymbols"} = $Meta->{"TotalSymbols"};
                 
                 $DB->{"ABIDump"}{$V}{$Md5} = \%Info;
             }
+            
+            # my $Dump = $DB->{"ABIDump"}{$V}{$Md5};
+            # if(not defined $Dump->{"TotalSymbols"})
+            # { # support for old data
+            #     print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump ...\n";
+            #     $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+            # }
         }
     }
     
@@ -3019,10 +3522,16 @@ sub scenario()
     
     if($TargetElement)
     {
-        if($TargetElement!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff||packagediff|abiview|abidiff)\Z/)
+        if($TargetElement!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport)\Z/)
         {
             exitStatus("Error", "the value of -target option should be one of the following: date, soname, changelog, abidump, abireport, rfcdiff, pkgdiff.");
         }
+    }
+    
+    if($TargetElement eq "objectsreport")
+    {
+        $TargetElement = "abireport";
+        $ObjectsReport = 1;
     }
     
     if($DumpVersion)
@@ -3078,6 +3587,17 @@ sub scenario()
         }
         
         $Profile = readProfile(readFile($Profile_Path));
+        
+        if(defined $Profile->{"ShowTotalChanges"}) {
+            $Profile->{"ShowTotalProblems"} = $Profile->{"ShowTotalChanges"};
+        }
+        
+        if($Profile->{"ReportStyle"} eq "SimpleLinks")
+        {
+            $LinkClass = "";
+            $LinkNew = "";
+            $LinkRemoved = "";
+        }
         
         if(not $Profile->{"Name"}) {
             exitStatus("Error", "name of the library is not specified in profile");
