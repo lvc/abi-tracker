@@ -87,7 +87,7 @@ my $HomePage = "http://abi-laboratory.pro/";
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
 Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
-License: GPL or LGPL
+License: GPLv2.0+ or LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
 Example:
@@ -135,7 +135,7 @@ DESCRIPTION:
   newer library versions.
 
   This tool is free software: you can redistribute it and/or
-  modify it under the terms of the GNU LGPL or GNU GPL.
+  modify it under the terms of the GPLv2.0+ or LGPLv2.1+.
 
 USAGE:
   $CmdName [options] [profile]
@@ -435,7 +435,7 @@ sub buildData()
                 next;
             }
             
-            createChangelog($V);
+            createChangelog($V, $V eq $Versions[$#Versions]);
         }
     }
     
@@ -518,8 +518,11 @@ sub buildData()
     
     if(defined $Profile->{"Versions"}{"current"})
     { # save pull/update time of the code repository
-        if(my $UTime = getScmUpdateTime()) {
-            $DB->{"ScmUpdateTime"} = $UTime;
+        if(-d $Profile->{"Versions"}{"current"}{"Installed"})
+        {
+            if(my $UTime = getScmUpdateTime()) {
+                $DB->{"ScmUpdateTime"} = $UTime;
+            }
         }
     }
     
@@ -579,7 +582,23 @@ sub countSymbols($)
     my $DumpPath = $_[0];
     my $ABI = eval(readFile($DumpPath));
     
-    return keys(%{$ABI->{"SymbolInfo"}});
+    return countSymbolsP($ABI);
+}
+
+sub countSymbolsP($)
+{
+    my $ABI = $_[0];
+    
+    my $Total = 0;
+    foreach my $S (keys(%{$ABI->{"SymbolInfo"}}))
+    {
+        my $Access = $ABI->{"SymbolInfo"}{$S}{"Access"};
+        if($Access ne "private") {
+            $Total+=1;
+        }
+    }
+    
+    return $Total;
 }
 
 sub countSymbols_Alt($)
@@ -648,11 +667,14 @@ sub simpleGraph($$$)
         
         my $V_S = $V;
         
-        if($V=~tr!\.!!>=2) {
-            $V_S = getMajor($V);
+        if(defined $Profile->{"GraphShortXTics"})
+        {
+            if($V=~tr!\.!!>=2) {
+                $V_S = getMajor($V);
+            }
         }
         
-        # $V_S=~s/\-rc.*//g;
+        $V_S=~s/\-(alpha|beta|rc)\d*\Z//g;
         
         $Content .= $_."  ".$Val;
         
@@ -667,8 +689,10 @@ sub simpleGraph($$$)
         $Val_Pre = $Val;
     }
     
-    $MinRange -= int($StartVal*5/100);
-    $MaxRange += int($StartVal*5/100);
+    my $Delta = $MaxRange - $MinRange;
+    
+    $MinRange -= int($Delta*5/100);
+    $MaxRange += int($Delta*5/100);
     
     my $Data = $TMP_DIR."/graph.data";
     
@@ -710,8 +734,10 @@ sub findObjects($)
         @Files = findFiles($Dir, "f", ".*\\.ko");
         @Files = (@Files, findFiles($Dir, "f", "", "vmlinux"));
     }
-    else {
-        @Files = findFiles($Dir, "f", ".*\\.so[0-9.]*");
+    else
+    {
+        @Files = findFiles($Dir, "f", ".*\\.so\\..*");
+        @Files = (@Files, findFiles($Dir, "f", ".*\\.so"));
     }
     
     my @Res = ();
@@ -872,10 +898,9 @@ sub skipFile($$)
                 }
                 elsif($Tag eq "SkipObjects")
                 { # short name
-                    $Name=~s/\..+\Z//g;
-                    $L=~s/\..+\Z//g;
+                    $L = getObjectName($L, "Short");
                     
-                    if($L eq $Name) {
+                    if($L eq getObjectName($Name, "Short")) {
                         return 1;
                     }
                 }
@@ -895,6 +920,8 @@ sub getSover($)
     if($Name=~/\.so\.([\w\.\-]+)/) {
         $Post = $1;
     }
+    
+    $Name=~s/x11//ig;
     
     if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so(\.|\Z)/)
     { # libMagickCore6-Q16.so.1
@@ -959,9 +986,10 @@ sub updateRequired($)
     return 0;
 }
 
-sub createChangelog($)
+sub createChangelog($$)
 {
     my $V = $_[0];
+    my $First = $_[1];
     
     if(defined $Profile->{"Versions"}{$V}{"Changelog"})
     {
@@ -1069,7 +1097,7 @@ sub createChangelog($)
     
     if($ChangelogPath)
     {
-        my $Html = toHtml($V, $ChangelogPath);
+        my $Html = toHtml($V, $ChangelogPath, $First);
         
         writeFile($Dir."/log.html", $Html);
         
@@ -1084,12 +1112,17 @@ sub createChangelog($)
     rmtree($TmpDir);
 }
 
-sub toHtml($$)
+sub toHtml($$$)
 {
-    my ($V, $Path) = @_;
+    my ($V, $Path, $First) = @_;
     my $Content = readFile($Path);
     
     my $LIM = 500000;
+    
+    if(not $First and $V ne "current") {
+        $LIM /= 20;
+    }
+    
     if(length($Content)>$LIM)
     {
         $Content = substr($Content, 0, $LIM);
@@ -1104,21 +1137,23 @@ sub toHtml($$)
     
     $Content = "\n<div class='changelog'>\n<pre class='wrap'>$Content</pre></div>\n";
     
-    my $Note = "";
-    
     if($V eq "current")
     {
+        my $Note = "source repository";
         if(defined $Profile->{"Git"})
         {
-            $Note = " (Git)";
+            $Note = "Git";
         }
         elsif(defined $Profile->{"Svn"})
         {
-            $Note = " (Svn)";
+            $Note = "Svn";
         }
+        
+        $Content = "<h1>Changelog from $Note</h1><br/><br/>".$Content;
     }
-    
-    $Content = "<h1>Changelog for <span class='version'>$V</span> version$Note</h1><br/><br/>".$Content;
+    else {
+        $Content = "<h1>Changelog for <span class='version'>$V</span> version</h1><br/><br/>".$Content;
+    }
     $Content = getHead("changelog").$Content;
     
     $Content = composeHTML_Head($Title, $Keywords, $Desc, getTop("changelog"), "changelog.css", "")."\n<body>\n$Content\n</body>\n</html>\n";
@@ -1156,7 +1191,7 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "RELEASE_NOTES", "ChangeLog", "Changelog",
+    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
     "RELEASE_NOTES.md", "RELEASE_NOTES.markdown")
     {
         if(-f $Dir."/".$Name
@@ -1182,11 +1217,11 @@ sub getScmUpdateTime()
         
         if(defined $Profile->{"Git"})
         {
-            $Head = "$Source/.git/FETCH_HEAD";
+            $Head = "$Source/.git/refs/heads/master";
             
             if(not -f $Head)
             { # is not updated yet
-                $Head = "$Source/.git/HEAD";
+                $Head = "$Source/.git/FETCH_HEAD";
             }
             
             if(not -f $Head)
@@ -1287,12 +1322,24 @@ sub detectDate($)
         my @Files = listPackage($Source);
         my %Dates = ();
         
+        my $Zip = ($Source=~/\.(zip|jar)\Z/i);
+        
         foreach my $Line (@Files)
         {
             if($Line!~/\Ad/ # skip directories
-            and $Line=~/ (\d+\-\d+\-\d+ \d+:\d+) /)
+            and $Line=~/ (\d+)\-(\d+)\-(\d+) (\d+:\d+) /)
             {
-                $Dates{$1} = 1;
+                my $Date = undef;
+                my $Time = $4;
+                
+                if($Zip) {
+                    $Date = $3."-".$1."-".$2;
+                }
+                else {
+                    $Date = $1."-".$2."-".$3;
+                }
+                
+                $Dates{$Date." ".$Time} = 1;
             }
         }
         
@@ -1361,6 +1408,12 @@ sub createABIDump($)
         rmtree($Dir);
     }
     
+    if(not @Objects)
+    {
+        printMsg("ERROR", "can't find objects");
+        return;
+    }
+    
     foreach my $Object (sort {lc($a) cmp lc($b)} @Objects)
     {
         my $RPath = $Object;
@@ -1407,7 +1460,7 @@ sub createABIDump($)
             my $Dump = eval(readFile($ABIDump));
             $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $Dump->{"Language"};
             
-            my $TotalSymbols = keys(%{$Dump->{"SymbolInfo"}});
+            my $TotalSymbols = countSymbolsP($Dump);
             $DB->{"ABIDump"}{$V}{$Md5}{"TotalSymbols"} = $TotalSymbols;
             
             my @Meta = ();
@@ -1589,7 +1642,7 @@ sub createABIReport($$)
     
     printMsg("INFO", "Creating objects ABI report between $V1 and $V2");
     
-    my $Cols = 3;
+    my $Cols = 5;
     my $ABIDiff = $Profile->{"Versions"}{$V2}{"ABIDiff"};
     
     if($ABIDiff eq "On")
@@ -1605,15 +1658,18 @@ sub createABIReport($$)
             printMsg("ERROR", "ABI Dumper EE is not installed");
             return 0;
         }
-        
+    }
+    
+    if($ABIDiff ne "On") {
         $Cols-=1;
     }
     
-    if(not defined $DB->{"ABIDump"}{$V1}) {
-        createABIDump($V1);
+    if($Profile->{"CompatRate"} eq "Off") {
+        $Cols-=1;
     }
-    if(not defined $DB->{"ABIDump"}{$V2}) {
-        createABIDump($V2);
+    
+    if(not $Profile->{"ShowTotalProblems"}) {
+        $Cols-=1;
     }
     
     if(not defined $DB->{"Soname"}{$V1}) {
@@ -1621,6 +1677,43 @@ sub createABIReport($$)
     }
     if(not defined $DB->{"Soname"}{$V2}) {
         detectSoname($V2);
+    }
+    
+    if($V2 eq "current")
+    { # NOTE: additional check of consistency
+        if(defined $DB->{"ABIDump"}{$V2})
+        {
+            my $IPath = $Profile->{"Versions"}{$V2}{"Installed"};
+            foreach my $Md (sort keys(%{$DB->{"ABIDump"}{$V2}}))
+            {
+                if(not -e $IPath."/".$DB->{"ABIDump"}{$V2}{$Md}{"Object"})
+                {
+                    print STDERR "WARNING: It's necessary to regenerate ABI dump for $V2\n";
+                    delete($DB->{"ABIDump"}{$V2});
+                    last;
+                }
+            }
+            
+            if(defined $DB->{"ABIDump"}{$V2})
+            {
+                foreach my $Obj (sort keys(%{$DB->{"Soname"}{$V2}}))
+                {
+                    if(not defined $DB->{"ABIDump"}{$V2}{getMd5($Obj)})
+                    {
+                        print STDERR "WARNING: It's necessary to regenerate ABI dump for $V2\n";
+                        delete($DB->{"ABIDump"}{$V2});
+                        last;
+                    }
+                }
+            }
+        }
+    }
+    
+    if(not defined $DB->{"ABIDump"}{$V1}) {
+        createABIDump($V1);
+    }
+    if(not defined $DB->{"ABIDump"}{$V2}) {
+        createABIDump($V2);
     }
     
     my $D1 = $DB->{"ABIDump"}{$V1};
@@ -1872,7 +1965,7 @@ sub createABIReport($$)
         {
             $Report .= "<tr>\n";
             $Report .= "<td class='object'>$Name</td>\n";
-            $Report .= "<td colspan='3' class='added'>Added to package</td>\n";
+            $Report .= "<td colspan=\'$Cols\' class='added'>Added to package</td>\n";
             $Report .= "</tr>\n";
         }
     }
@@ -1987,7 +2080,7 @@ sub createABIReport($$)
         }
         elsif(defined $Removed{$Object1})
         {
-            $Report .= "<td colspan='3' class='removed'>Removed from package</td>\n";
+            $Report .= "<td colspan=\'$Cols\' class='removed'>Removed from package</td>\n";
         }
         $Report .= "</tr>\n";
     }
@@ -2035,18 +2128,6 @@ sub createABIReport($$)
         }
     }
     
-    my $BC = 100;
-    
-    if($TotalFuncs) {
-        $BC -= $Affected_T/$TotalFuncs;
-    }
-    
-    if(my $Rm = keys(%Removed) and $#Objects1>=0) {
-        $BC *= (1-$Rm/($#Objects1+1));
-    }
-    
-    $BC = formatNum($BC);
-    
     my ($AddedByObjects_T, $RemovedByObjects_T) = (0, 0);
     
     foreach my $Object (keys(%Added))
@@ -2074,6 +2155,20 @@ sub createABIReport($$)
         
         $RemovedByObjects_T += $Dump->{"TotalSymbols"};
     }
+    
+    my $BC = 100;
+    
+    if($TotalFuncs) {
+        $BC -= $Affected_T/$TotalFuncs;
+    }
+    
+    if(my $Rm = keys(%Removed) and $#Objects1>=0)
+    {
+        $BC *= (1-$RemovedByObjects_T/($TotalFuncs+$RemovedByObjects_T));
+        # $BC *= (1-$Rm/($#Objects1+1));
+    }
+    
+    $BC = formatNum($BC);
     
     $DB->{"ABIReport"}{$V1}{$V2}{"Path"} = $Output;
     $DB->{"ABIReport"}{$V1}{$V2}{"BC"} = $BC;
@@ -2278,7 +2373,17 @@ sub compareABIs($$$$)
         $Cmd .= " -skip-headers \"$TmpDir/headers.list\"";
     }
     
+    if($Profile->{"Mode"} eq "Kernel") {
+        $Cmd .= " -limit-affected 2";
+    }
+    
     qx/$Cmd/; # execute
+    
+    if(not -e $Output)
+    {
+        rmtree($TmpDir);
+        return;
+    }
     
     my ($Affected, $Added, $Removed) = ();
     my $Total = 0;
@@ -2778,9 +2883,13 @@ sub createTimeline()
         }
     }
     
-    my $Cols = 10;
+    my $Cols = 11;
     
     if($CompatRate eq "Off") {
+        $Cols-=1;
+    }
+    
+    if(not $Profile->{"ShowTotalProblems"}) {
         $Cols-=1;
     }
     
@@ -3487,6 +3596,25 @@ sub checkDB()
         if(not -e $DB->{"ABIView"}{$V}{"Path"})
         {
             delete($DB->{"ABIView"}{$V});
+        }
+    }
+    
+    
+    foreach my $V (keys(%{$DB->{"Soname"}}))
+    {
+        if($V eq "current")
+        {
+            my $IPath = $Profile->{"Versions"}{$V}{"Installed"};
+            
+            foreach my $Obj (keys(%{$DB->{"Soname"}{$V}}))
+            {
+                if(not -e $IPath."/".$Obj)
+                {
+                    delete($DB->{"Soname"}{$V});
+                    delete($DB->{"Sover"}{$V});
+                    last;
+                }
+            }
         }
     }
 }
