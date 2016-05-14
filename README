@@ -13,9 +13,9 @@ INSTALL:
 REQUIRES:
   Perl 5 (5.8 or newer)
   Elfutils
-  ABI Dumper (0.99.9 or newer)
+  ABI Dumper (0.99.15 or newer)
   Vtable-Dumper (1.1 or newer)
-  ABI Compliance Checker (1.99.10 or newer)
+  ABI Compliance Checker (1.99.20 or newer)
   PkgDiff (1.6.4 or newer)
   RfcDiff (1.41 or newer)
   

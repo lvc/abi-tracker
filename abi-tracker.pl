@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.5
+# ABI Tracker 1.6
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
@@ -15,9 +15,9 @@
 # ============
 #  Perl 5 (5.8 or newer)
 #  Elfutils (eu-readelf)
-#  ABI Dumper (0.99.11 or newer)
+#  ABI Dumper (0.99.15 or newer)
 #  Vtable-Dumper (1.1 or newer)
-#  ABI Compliance Checker (1.99.13 or newer)
+#  ABI Compliance Checker (1.99.20 or newer)
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.5";
+my $TOOL_VERSION = "1.6";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -51,11 +51,11 @@ my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
 
 my $ABI_DUMPER = "abi-dumper";
-my $ABI_DUMPER_VERSION = "0.99.11";
+my $ABI_DUMPER_VERSION = "0.99.15";
 my $ABI_DUMPER_EE = 0;
 
 my $ABI_CC = "abi-compliance-checker";
-my $ABI_CC_VERSION = "1.99.13";
+my $ABI_CC_VERSION = "1.99.20";
 
 my $RFCDIFF = "rfcdiff";
 my $PKGDIFF = "pkgdiff";
@@ -361,7 +361,7 @@ sub skipVersion($)
         
         foreach my $E (@Skip)
         {
-            if($E=~s/\*/\.*/g)
+            if($E=~/[\*\+\(\|\\]/)
             { # pattern
                 if($V=~/\A$E\Z/) {
                     return 1;
@@ -860,14 +860,14 @@ sub detectSoname($)
 }
 
 sub skipHeader($) {
-    return skipFile($_[0], "SkipHeaders");
+    return matchFile($_[0], "SkipHeaders");
 }
 
 sub skipLib($) {
-    return skipFile($_[0], "SkipObjects");
+    return matchFile($_[0], "SkipObjects");
 }
 
-sub skipFile($$)
+sub matchFile($$)
 {
     my ($Path, $Tag) = @_;
     
@@ -890,7 +890,7 @@ sub skipFile($$)
             }
             else
             { # file
-                if($L=~s/\*/\.*/g)
+                if($L=~/[\*\+\(\|\\]/)
                 { # pattern
                     if($Name=~/\A$L\Z/) {
                         return 1;
