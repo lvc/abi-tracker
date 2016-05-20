@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.6
+# ABI Tracker 1.7
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
@@ -17,7 +17,7 @@
 #  Elfutils (eu-readelf)
 #  ABI Dumper (0.99.15 or newer)
 #  Vtable-Dumper (1.1 or newer)
-#  ABI Compliance Checker (1.99.20 or newer)
+#  ABI Compliance Checker (1.99.21 or newer)
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.6";
+my $TOOL_VERSION = "1.7";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -63,7 +63,7 @@ my $PKGDIFF_VERSION = "1.6.4";
 
 my $ABI_VIEWER = "abi-viewer";
 
-my ($Help, $DumpVersion, $Build, $Rebuild,
+my ($Help, $DumpVersion, $Build, $Rebuild, $DisableCache,
 $TargetVersion, $TargetElement, $Clear, $GlobalIndex, $Deploy);
 
 my $CmdName = basename($0);
@@ -111,6 +111,7 @@ GetOptions("h|help!" => \$Help,
   "t|target=s" => \$TargetElement,
   "clear!" => \$Clear,
   "global-index!" => \$GlobalIndex,
+  "disable-cache!" => \$DisableCache,
   "deploy=s" => \$Deploy
 ) or ERR_MESSAGE();
 
@@ -178,6 +179,10 @@ GENERAL OPTIONS:
   
   -global-index
       Create list of all tested libraries.
+  
+  -disable-cache
+      Enable this option if you've changed filter of checked
+      symbols in the library (skipped types, skipped functions, etc.).
   
   -deploy DIR
       Copy all reports and css to DIR.
@@ -535,14 +540,11 @@ sub buildData()
         foreach my $Md5 (sort keys(%{$DB->{"ABIDump"}{$First}}))
         {
             my $Dump = $DB->{"ABIDump"}{$First}{$Md5};
-            
-            if(not defined $Dump->{"TotalSymbols"})
-            { # support for old data
-                print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($First) ...\n";
-                $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+            if(skipLib($Dump->{"Object"})) {
+                next;
             }
             
-            $Total += $Dump->{"TotalSymbols"};
+            $Total += countSymbolsF($Dump, $First);
         }
         
         my $Scatter = {};
@@ -577,50 +579,53 @@ sub buildData()
     }
 }
 
+sub countSymbolsF($$)
+{
+    my ($Dump, $V) = @_;
+    
+    if(defined $Dump->{"TotalSymbolsFiltered"})
+    {
+        if(not defined $DisableCache) {
+            return $Dump->{"TotalSymbolsFiltered"};
+        }
+    }
+    
+    my $AccOpts = getABICC_Options();
+    
+    if($AccOpts=~/list|skip/)
+    {
+        my $Path = $Dump->{"Path"};
+        printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\' ($V)");
+        
+        my $Count = qx/$ABI_CC -count-symbols \"$Path\" $AccOpts/;
+        chomp($Count);
+        
+        return ($Dump->{"TotalSymbolsFiltered"} = $Count);
+    }
+    
+    if(not defined $Dump->{"TotalSymbols"})
+    { # support for old data
+        print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
+        $Dump->{"TotalSymbols"} = countSymbols($Dump);
+    }
+    elsif(not defined $Dump->{"TotalSymbolsFiltered"})
+    { # TotalSymbols is fixed in 1.7
+        print STDERR "WARNING: TotalSymbols property contains obsolete data, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
+        $Dump->{"TotalSymbols"} = countSymbols($Dump);
+    }
+    
+    return ($Dump->{"TotalSymbolsFiltered"} = $Dump->{"TotalSymbols"});
+}
+
 sub countSymbols($)
 {
-    my $DumpPath = $_[0];
-    my $ABI = eval(readFile($DumpPath));
+    my $Dump = $_[0];
+    my $Path = $Dump->{"Path"};
     
-    return countSymbolsP($ABI);
-}
-
-sub countSymbolsP($)
-{
-    my $ABI = $_[0];
+    printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\'");
     
-    my $Total = 0;
-    foreach my $S (keys(%{$ABI->{"SymbolInfo"}}))
-    {
-        my $Access = $ABI->{"SymbolInfo"}{$S}{"Access"};
-        if($Access ne "private") {
-            $Total+=1;
-        }
-    }
-    
-    return $Total;
-}
-
-sub countSymbols_Alt($)
-{
-    my $DumpPath = $_[0];
-    
-    my $ABI = eval(readFile($DumpPath));
-    
-    my $SymbolInfo = $ABI->{"SymbolInfo"};
-    my $Symbols = $ABI->{"Symbols"};
-    $Symbols = $Symbols->{(keys(%{$Symbols}))[0]};
-    
-    my $Total = 0;
-    
-    foreach (keys(%{$SymbolInfo}))
-    {
-        my $Name = $SymbolInfo->{$_}{"ShortName"};
-        if(defined $Symbols->{$Name})
-        {
-            $Total += 1;
-        }
-    }
+    my $Total = qx/$ABI_CC -count-symbols \"$Path\"/;
+    chomp($Total);
     
     return $Total;
 }
@@ -1460,7 +1465,7 @@ sub createABIDump($)
             my $Dump = eval(readFile($ABIDump));
             $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $Dump->{"Language"};
             
-            my $TotalSymbols = countSymbolsP($Dump);
+            my $TotalSymbols = countSymbols($Dump);
             $DB->{"ABIDump"}{$V}{$Md5}{"TotalSymbols"} = $TotalSymbols;
             
             my @Meta = ();
@@ -2110,14 +2115,7 @@ sub createABIReport($$)
         {
             my $ABIReport_D = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5};
             my $Dump = $DB->{"ABIDump"}{$V1}{getMd5($Object)};
-            
-            if(not defined $Dump->{"TotalSymbols"})
-            { # support for old data
-                print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V1) ...\n";
-                $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
-            }
-            
-            my $Funcs = $Dump->{"TotalSymbols"};
+            my $Funcs = countSymbolsF($Dump, $V1);
             
             $Affected_T += $ABIReport_D->{"Affected"} * $Funcs;
             $AddedSymbols_T += $ABIReport_D->{"Added"};
@@ -2133,27 +2131,13 @@ sub createABIReport($$)
     foreach my $Object (keys(%Added))
     {
         my $Dump = $DB->{"ABIDump"}{$V2}{getMd5($Object)};
-        
-        if(not defined $Dump->{"TotalSymbols"})
-        { # support for old data
-            print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V2) ...\n";
-            $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
-        }
-        
-        $AddedByObjects_T += $Dump->{"TotalSymbols"};
+        $AddedByObjects_T += countSymbolsF($Dump, $V2);
     }
     
     foreach my $Object (keys(%Removed))
     {
         my $Dump = $DB->{"ABIDump"}{$V1}{getMd5($Object)};
-        
-        if(not defined $Dump->{"TotalSymbols"})
-        { # support for old data
-            print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for $Object ($V1) ...\n";
-            $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
-        }
-        
-        $RemovedByObjects_T += $Dump->{"TotalSymbols"};
+        $RemovedByObjects_T += countSymbolsF($Dump, $V1);
     }
     
     my $BC = 100;
@@ -2162,10 +2146,8 @@ sub createABIReport($$)
         $BC -= $Affected_T/$TotalFuncs;
     }
     
-    if(my $Rm = keys(%Removed) and $#Objects1>=0)
-    {
+    if(my $Rm = keys(%Removed) and $#Objects1>=0) {
         $BC *= (1-$RemovedByObjects_T/($TotalFuncs+$RemovedByObjects_T));
-        # $BC *= (1-$Rm/($#Objects1+1));
     }
     
     $BC = formatNum($BC);
@@ -2351,26 +2333,8 @@ sub compareABIs($$$$)
     
     my $Cmd = $ABI_CC." -l \"$Module\" -bin -old \"".$Dump1->{"Path"}."\" -new \"".$Dump2->{"Path"}."\" -report-path \"$Output\"";
     
-    if(my $SkipSymbols = $Profile->{"SkipSymbols"}) {
-        $Cmd .= " -skip-symbols \"$SkipSymbols\"";
-    }
-    
-    if(my $SkipTypes = $Profile->{"SkipTypes"}) {
-        $Cmd .= " -skip-types \"$SkipTypes\"";
-    }
-    
-    if(my $SkipInternalSymbols = $Profile->{"SkipInternalSymbols"}) {
-        $Cmd .= " -skip-internal-symbols \"$SkipInternalSymbols\"";
-    }
-    
-    if(my $SkipInternalTypes = $Profile->{"SkipInternalTypes"}) {
-        $Cmd .= " -skip-internal-types \"$SkipInternalTypes\"";
-    }
-    
-    if(my $SkipHeaders = $Profile->{"SkipHeaders"})
-    {
-        writeFile($TmpDir."/headers.list", join("\n", @{$SkipHeaders}));
-        $Cmd .= " -skip-headers \"$TmpDir/headers.list\"";
+    if(my $AccOpts = getABICC_Options()) {
+        $Cmd .= $AccOpts;
     }
     
     if($Profile->{"Mode"} eq "Kernel") {
@@ -2428,6 +2392,36 @@ sub compareABIs($$$$)
     writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
     
     rmtree($TmpDir);
+}
+
+sub getABICC_Options()
+{
+    my $Opt = "";
+    
+    if(my $SkipSymbols = $Profile->{"SkipSymbols"}) {
+        $Opt .= " -skip-symbols \"$SkipSymbols\"";
+    }
+    
+    if(my $SkipTypes = $Profile->{"SkipTypes"}) {
+        $Opt .= " -skip-types \"$SkipTypes\"";
+    }
+    
+    if(my $SkipInternalSymbols = $Profile->{"SkipInternalSymbols"}) {
+        $Opt .= " -skip-internal-symbols \"$SkipInternalSymbols\"";
+    }
+    
+    if(my $SkipInternalTypes = $Profile->{"SkipInternalTypes"}) {
+        $Opt .= " -skip-internal-types \"$SkipInternalTypes\"";
+    }
+    
+    if(my $SkipHeaders = $Profile->{"SkipHeaders"})
+    {
+        my $TmpDir = $TMP_DIR."/abicc/";
+        writeFile($TmpDir."/headers.list", join("\n", @{$SkipHeaders}));
+        $Opt .= " -skip-headers \"$TmpDir/headers.list\"";
+    }
+    
+    return $Opt;
 }
 
 sub createPkgdiff($$)
@@ -3400,7 +3394,7 @@ sub checkFiles()
             # if(not defined $Dump->{"TotalSymbols"})
             # { # support for old data
             #     print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump ...\n";
-            #     $Dump->{"TotalSymbols"} = countSymbols($Dump->{"Path"});
+            #     $Dump->{"TotalSymbols"} = countSymbols($Dump);
             # }
         }
     }
