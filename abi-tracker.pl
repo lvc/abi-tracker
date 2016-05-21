@@ -1462,16 +1462,16 @@ sub createABIDump($)
             $DB->{"ABIDump"}{$V}{$Md5}{"Path"} = $ABIDump;
             $DB->{"ABIDump"}{$V}{$Md5}{"Object"} = $RPath;
             
-            my $Dump = eval(readFile($ABIDump));
-            $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $Dump->{"Language"};
+            my $ABI = eval(readFile($ABIDump));
+            $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $ABI->{"Language"};
             
-            my $TotalSymbols = countSymbols($Dump);
+            my $TotalSymbols = countSymbols($DB->{"ABIDump"}{$V}{$Md5});
             $DB->{"ABIDump"}{$V}{$Md5}{"TotalSymbols"} = $TotalSymbols;
             
             my @Meta = ();
             
             push(@Meta, "\"Object\": \"".$RPath."\"");
-            push(@Meta, "\"Lang\": \"".$Dump->{"Language"}."\"");
+            push(@Meta, "\"Lang\": \"".$ABI->{"Language"}."\"");
             push(@Meta, "\"TotalSymbols\": \"".$TotalSymbols."\"");
             push(@Meta, "\"PublicABI\": \"1\"");
             
