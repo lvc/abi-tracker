@@ -608,7 +608,8 @@ sub countSymbolsF($$)
         print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
         $Dump->{"TotalSymbols"} = countSymbols($Dump);
     }
-    elsif(not defined $Dump->{"TotalSymbolsFiltered"})
+    elsif(not defined $Dump->{"Version"}
+    or cmpVersions_S($Dump->{"Version"}, "1.7")<0)
     { # TotalSymbols is fixed in 1.7
         print STDERR "WARNING: TotalSymbols property contains obsolete data, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
         $Dump->{"TotalSymbols"} = countSymbols($Dump);
@@ -1468,12 +1469,15 @@ sub createABIDump($)
             my $TotalSymbols = countSymbols($DB->{"ABIDump"}{$V}{$Md5});
             $DB->{"ABIDump"}{$V}{$Md5}{"TotalSymbols"} = $TotalSymbols;
             
+            $DB->{"ABIDump"}{$V}{$Md5}{"Version"} = $TOOL_VERSION;
+            
             my @Meta = ();
             
             push(@Meta, "\"Object\": \"".$RPath."\"");
             push(@Meta, "\"Lang\": \"".$ABI->{"Language"}."\"");
             push(@Meta, "\"TotalSymbols\": \"".$TotalSymbols."\"");
             push(@Meta, "\"PublicABI\": \"1\"");
+            push(@Meta, "\"Version\": \"".$TOOL_VERSION."\"");
             
             writeFile($Dir."/".$Md5."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
         }
@@ -3252,25 +3256,33 @@ sub createGlobalIndex()
     #$Content .= "<th>Maintainer</th>\n";
     $Content .= "</tr>\n";
     
+    my %LibAttr = ();
     foreach my $L (sort @Libs)
     {
         my $DB = eval(readFile("db/$L/$DB_NAME"));
+        
         my $Title = $L;
         if(defined $DB->{"Title"}) {
             $Title = $DB->{"Title"};
         }
         
+        $LibAttr{$L}{"Title"} = $Title;
+        $LibAttr{$L}{"Maintainer"} = $DB->{"Maintainer"};
+        $LibAttr{$L}{"MaintainerUrl"} = $DB->{"MaintainerUrl"};
+    }
+    
+    foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
+    {
         $Content .= "<tr>\n";
-        $Content .= "<td class='sl'>$Title</td>\n";
+        $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>\n";
         $Content .= "<td><a href='timeline/$L/index.html'>timeline</a></td>\n";
         
-        #my $M = $DB->{"Maintainer"};
-        
-        #if(defined $DB->{"MaintainerUrl"}) {
-        #    $M = "<a href='".$DB->{"MaintainerUrl"}."'>$M</a>";
+        #my $M = $LibAttr{$L}{"Maintainer"};
+        #if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
+        #    $M = "<a href='".$MUrl."'>$M</a>";
         #}
-        
         #$Content .= "<td>$M</td>\n";
+        
         $Content .= "</tr>\n";
     }
     
@@ -3386,6 +3398,7 @@ sub checkFiles()
                 $Info{"Object"} = $Meta->{"Object"};
                 $Info{"Lang"} = $Meta->{"Lang"};
                 $Info{"TotalSymbols"} = $Meta->{"TotalSymbols"};
+                $Info{"Version"} = $Meta->{"Version"};
                 
                 $DB->{"ABIDump"}{$V}{$Md5} = \%Info;
             }
