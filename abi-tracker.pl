@@ -51,7 +51,7 @@ my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
 
 my $ABI_DUMPER = "abi-dumper";
-my $ABI_DUMPER_VERSION = "0.99.15";
+my $ABI_DUMPER_VERSION = "0.99.16";
 my $ABI_DUMPER_EE = 0;
 
 my $ABI_CC = "abi-compliance-checker";
@@ -64,7 +64,8 @@ my $PKGDIFF_VERSION = "1.6.4";
 my $ABI_VIEWER = "abi-viewer";
 
 my ($Help, $DumpVersion, $Build, $Rebuild, $DisableCache,
-$TargetVersion, $TargetElement, $Clear, $GlobalIndex, $Deploy);
+$TargetVersion, $TargetElement, $Clear, $GlobalIndex, $Deploy,
+$Debug);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -112,7 +113,8 @@ GetOptions("h|help!" => \$Help,
   "clear!" => \$Clear,
   "global-index!" => \$GlobalIndex,
   "disable-cache!" => \$DisableCache,
-  "deploy=s" => \$Deploy
+  "deploy=s" => \$Deploy,
+  "debug!" => \$Debug
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -186,6 +188,9 @@ GENERAL OPTIONS:
   
   -deploy DIR
       Copy all reports and css to DIR.
+  
+  -debug
+      Enable debug messages.
 ";
 
 my $Profile;
@@ -678,6 +683,14 @@ sub simpleGraph($$$)
             if($V=~tr!\.!!>=2) {
                 $V_S = getMajor($V);
             }
+            elsif($V=~/\A(20\d\d)\d\d\d\d\Z/)
+            { # 20160507
+                $V_S = $1;
+            }
+            elsif($V=~/\A(.+)\-\d\d\d\d\d\d\d\d\Z/)
+            { # 0.12-20140410
+                $V_S = $1;
+            }
         }
         
         $V_S=~s/\-(alpha|beta|rc)\d*\Z//g;
@@ -699,6 +712,12 @@ sub simpleGraph($$$)
     
     $MinRange -= int($Delta*5/100);
     $MaxRange += int($Delta*5/100);
+    
+    if($MaxRange-$MinRange<20)
+    {
+        $MinRange -= 5;
+        $MaxRange += 5;
+    }
     
     my $Data = $TMP_DIR."/graph.data";
     
@@ -1420,6 +1439,8 @@ sub createABIDump($)
         return;
     }
     
+    my $TmpDir = $TMP_DIR."/objects";
+    
     foreach my $Object (sort {lc($a) cmp lc($b)} @Objects)
     {
         my $RPath = $Object;
@@ -1438,7 +1459,8 @@ sub createABIDump($)
         
         my $Cmd = $ABI_DUMPER." \"".$Object."\" -output \"".$ABIDump."\" -lver \"$V\"";
         
-        if(not $Profile->{"PrivateABI"})
+        if(not $Profile->{"PrivateABI"}
+        or $Profile->{"PrivateABI"} eq "Off")
         { # set "PrivateABI":1 in the profile to check all symbols
             if($Profile->{"Mode"} eq "Kernel") {
                 $Cmd .= " -kernel-export";
@@ -1446,7 +1468,25 @@ sub createABIDump($)
             else
             {
                 $Cmd .= " -public-headers \"$Installed\"";
-                $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
+                if($Profile->{"UseTUDump"})
+                {
+                    $Cmd .= " -use-tu-dump -cache-headers \"$TmpDir\"";
+                    
+                    if(my $IncPreamble = $Profile->{"IncludePreamble"}) {
+                        $Cmd .= " -include-preamble \"$IncPreamble\"";
+                    }
+                    
+                    if(my $IncPaths = $Profile->{"IncludePaths"}) {
+                        $Cmd .= " -include-paths \"$IncPaths\"";
+                    }
+                }
+                else {
+                    $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
+                }
+                
+                if($Profile->{"ReimplementStd"}) {
+                    $Cmd .= " -reimplement-std";
+                }
             }
         }
         
@@ -1454,6 +1494,10 @@ sub createABIDump($)
         {
             $Cmd .= " -extra-dump";
             $Cmd .= " -extra-info \"".$Dir."/".$Md5."/debug/\"";
+        }
+        
+        if($Debug) {
+            printMsg("DEBUG", "executing $Cmd");
         }
         
         my $Log = `$Cmd`; # execute
@@ -1486,6 +1530,10 @@ sub createABIDump($)
             printMsg("ERROR", "can't create ABI dump");
             rmtree($ABIDir);
         }
+    }
+    
+    if(-d $TmpDir) {
+        rmtree($TmpDir);
     }
 }
 
@@ -2025,6 +2073,8 @@ sub createABIReport($$)
                 my $RemovedSymbols = $ABIReport_D->{"Removed"};
                 my $TotalProblems = $ABIReport_D->{"TotalProblems"};
                 
+                my $Changed = ($AddedSymbols or $RemovedSymbols or $TotalProblems);
+                
                 if($Profile->{"CompatRate"} ne "Off")
                 {
                     my $CClass = "ok";
@@ -2043,7 +2093,14 @@ sub createABIReport($$)
                             $CClass = "incompatible";
                         }
                     }
-                    $Report .= "<td class=\'$CClass\'><a href='../../../../".$ABIReport_D->{"Path"}."'>".formatNum($BC_D)."%</a></td>\n";
+                    $Report .= "<td class=\'$CClass\'>";
+                    if(not $Changed and $Profile->{"HideEmpty"}) {
+                        $Report .= formatNum($BC_D)."%";
+                    }
+                    else {
+                        $Report .= "<a href='../../../../".$ABIReport_D->{"Path"}."'>".formatNum($BC_D)."%</a>";
+                    }
+                    $Report .= "</td>\n";
                 }
                 
                 if($AddedSymbols) {
@@ -2345,6 +2402,10 @@ sub compareABIs($$$$)
         $Cmd .= " -limit-affected 2";
     }
     
+    if($Debug) {
+        printMsg("DEBUG", "executing $Cmd");
+    }
+    
     qx/$Cmd/; # execute
     
     if(not -e $Output)
@@ -2394,6 +2455,12 @@ sub compareABIs($$$$)
     push(@Meta, "\"Object2\": \"".$Obj2."\"");
     
     writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
+    
+    my $Changed = ($Added or $Removed or $Total);
+    
+    if(not $Changed and $Profile->{"HideEmpty"}) {
+        unlink($Output);
+    }
     
     rmtree($TmpDir);
 }
@@ -2754,10 +2821,10 @@ sub getHead($)
     $Head .= "<td align='center'>";
     
     if($TARGET_LIB) {
-        $Head .= "<h1 class='tool'><a title=\'Home: ABI tracker for ".showTitle()."\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>".$ReportHeader."</a></h1>";
+        $Head .= "<h1 class='tool'><a title=\'ABI tracker for ".showTitle()."\' href='$UrlPr/timeline/$TARGET_LIB/index.html' class='tool'>".$ReportHeader."</a></h1>";
     }
     else {
-        $Head .= "<h1 class='tool'><a title='Home: ABI tracker' href='' class='tool'>".$ReportHeader."</a></h1>";
+        $Head .= "<h1 class='tool'><a title='ABI tracker' href='' class='tool'>".$ReportHeader."</a></h1>";
     }
     $Head .= "</td>";
     
@@ -2819,6 +2886,25 @@ sub getVersionsList()
 {
     my @Versions = keys(%{$Profile->{"Versions"}});
     @Versions = sort {int($Profile->{"Versions"}{$a}{"Pos"})<=>int($Profile->{"Versions"}{$b}{"Pos"})} @Versions;
+    
+    if(my $Minimal = $Profile->{"MinimalVersion"})
+    {
+        if(defined $Profile->{"Versions"}{$Minimal})
+        {
+            my $MinPos = $Profile->{"Versions"}{$Minimal}{"Pos"};
+            my @Part = ();
+            
+            foreach (@Versions)
+            {
+                if($Profile->{"Versions"}{$_}{"Pos"}<=$MinPos) {
+                    push(@Part, $_);
+                }
+            }
+            
+            @Versions = @Part;
+        }
+    }
+    
     return @Versions;
 }
 
@@ -3014,7 +3100,7 @@ sub createTimeline()
         
         $Content .= "<tr id='".$Anchor."'>";
         
-        $Content .= "<td>".$V."</td>\n";
+        $Content .= "<td title='".getFilename($Profile->{"Versions"}{$V}{"Source"})."'>".$V."</td>\n";
         $Content .= "<td>".showDate($V, $Date)."</td>\n";
         
         if($Soname ne "Off") {
@@ -3198,11 +3284,20 @@ sub createTimeline()
         
         $Content .= "Maintained by $M. ";
     }
-    $Content .= "Last updated on ".localtime($DB->{"Updated"}).".";
+    
+    my $Date = localtime($DB->{"Updated"});
+    $Date=~s/(\d\d:\d\d):\d\d/$1/;
+    
+    $Content .= "Last updated on ".$Date.".";
+    
+    $Content .= "<br/>";
+    $Content .= "<br/>";
+    $Content .= "Generated by <a href='https://github.com/lvc/abi-tracker'>ABI Tracker</a>, <a href='https://github.com/lvc/abi-compliance-checker'>ABICC</a> and <a href='https://github.com/lvc/abi-dumper'>ABI Dumper</a> tools.";
     
     if(-f $GraphPath)
     {
-        $Content .= "</td><td width='100%' valign='top' align='left' style='padding-left:4em;'>\n";
+        $Content .= "</td>";
+        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:4em;'>\n";
         $Content .= "<img src=\'../../$GraphPath\' alt='Timeline of ABI changes' />\n";
         $Content .= "</td>\n";
         $Content .=  "</tr>\n";
@@ -3253,22 +3348,25 @@ sub createGlobalIndex()
     $Content .= "<tr>\n";
     $Content .= "<th>Name</th>\n";
     $Content .= "<th>ABI Timeline</th>\n";
-    #$Content .= "<th>Maintainer</th>\n";
+    # $Content .= "<th>Maintainer</th>\n";
     $Content .= "</tr>\n";
     
     my %LibAttr = ();
     foreach my $L (sort @Libs)
     {
+        my $Title = $L;
+        # my ($M, $MUrl);
+        
         my $DB = eval(readFile("db/$L/$DB_NAME"));
         
-        my $Title = $L;
         if(defined $DB->{"Title"}) {
             $Title = $DB->{"Title"};
         }
         
         $LibAttr{$L}{"Title"} = $Title;
-        $LibAttr{$L}{"Maintainer"} = $DB->{"Maintainer"};
-        $LibAttr{$L}{"MaintainerUrl"} = $DB->{"MaintainerUrl"};
+        
+        # $LibAttr{$L}{"Maintainer"} = $M;
+        # $LibAttr{$L}{"MaintainerUrl"} = $MUrl;
     }
     
     foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
@@ -3277,11 +3375,11 @@ sub createGlobalIndex()
         $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>\n";
         $Content .= "<td><a href='timeline/$L/index.html'>timeline</a></td>\n";
         
-        #my $M = $LibAttr{$L}{"Maintainer"};
-        #if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
-        #    $M = "<a href='".$MUrl."'>$M</a>";
-        #}
-        #$Content .= "<td>$M</td>\n";
+        # my $M = $LibAttr{$L}{"Maintainer"};
+        # if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
+        #     $M = "<a href='".$MUrl."'>$M</a>";
+        # }
+        # $Content .= "<td>$M</td>\n";
         
         $Content .= "</tr>\n";
     }
@@ -3611,16 +3709,24 @@ sub checkDB()
     {
         if($V eq "current")
         {
-            my $IPath = $Profile->{"Versions"}{$V}{"Installed"};
-            
-            foreach my $Obj (keys(%{$DB->{"Soname"}{$V}}))
+            if(defined $Profile->{"Versions"}{$V})
             {
-                if(not -e $IPath."/".$Obj)
+                my $IPath = $Profile->{"Versions"}{$V}{"Installed"};
+                
+                foreach my $Obj (keys(%{$DB->{"Soname"}{$V}}))
                 {
-                    delete($DB->{"Soname"}{$V});
-                    delete($DB->{"Sover"}{$V});
-                    last;
+                    if(not -e $IPath."/".$Obj)
+                    {
+                        delete($DB->{"Soname"}{$V});
+                        delete($DB->{"Sover"}{$V});
+                        last;
+                    }
                 }
+            }
+            else
+            {
+                delete($DB->{"Soname"}{$V});
+                delete($DB->{"Sover"}{$V});
             }
         }
     }
@@ -3679,6 +3785,10 @@ sub scenario()
     {
         printMsg("INFO", $HelpMessage);
         exit(0);
+    }
+    
+    if(-d "archives_report") {
+        exitStatus("Error", "Can't execute inside the Java API tracker home directory");
     }
     
     loadModule("Basic");
