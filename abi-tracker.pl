@@ -1476,8 +1476,9 @@ sub createABIDump($)
                         $Cmd .= " -include-preamble \"$IncPreamble\"";
                     }
                     
-                    if(my $IncPaths = $Profile->{"IncludePaths"}) {
-                        $Cmd .= " -include-paths \"$IncPaths\"";
+                    if(defined $Profile->{"IncludePaths"})
+                    { # May be empty to deny automatic generation of include paths
+                        $Cmd .= " -include-paths \"".$Profile->{"IncludePaths"}."\"";
                     }
                 }
                 else {
@@ -1494,6 +1495,12 @@ sub createABIDump($)
         {
             $Cmd .= " -extra-dump";
             $Cmd .= " -extra-info \"".$Dir."/".$Md5."/debug/\"";
+        }
+        
+        if($Profile->{"MixedHeaders"})
+        {
+            $Cmd .= " -mixed-headers";
+            $Cmd .= " -debug";
         }
         
         if($Debug) {
