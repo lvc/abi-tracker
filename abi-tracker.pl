@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.7
+# ABI Tracker 1.8
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
@@ -15,7 +15,7 @@
 # ============
 #  Perl 5 (5.8 or newer)
 #  Elfutils (eu-readelf)
-#  ABI Dumper (0.99.15 or newer)
+#  ABI Dumper (0.99.16 or newer)
 #  Vtable-Dumper (1.1 or newer)
 #  ABI Compliance Checker (1.99.21 or newer)
 #  PkgDiff (1.6.4 or newer)
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.7";
+my $TOOL_VERSION = "1.8";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -55,7 +55,7 @@ my $ABI_DUMPER_VERSION = "0.99.16";
 my $ABI_DUMPER_EE = 0;
 
 my $ABI_CC = "abi-compliance-checker";
-my $ABI_CC_VERSION = "1.99.20";
+my $ABI_CC_VERSION = "1.99.21";
 
 my $RFCDIFF = "rfcdiff";
 my $PKGDIFF = "pkgdiff";
