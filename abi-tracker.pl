@@ -683,8 +683,8 @@ sub simpleGraph($$$)
         
         if(defined $Profile->{"GraphShortXTics"})
         {
-            if($V=~tr!\.!!>=2) {
-                $V_S = getMajor($V);
+            if($V=~tr![\._\-]!!>=2) {
+                $V_S = getMajor($V, 2);
             }
             elsif($V=~/\A(20\d\d)\d\d\d\d\Z/)
             { # 20160507
@@ -968,11 +968,11 @@ sub getSover($)
     
     $Name=~s/x11//ig;
     
-    if($Name=~/(\d+[\d\.]*\-[\w\.\-]*)\.so(\.|\Z)/)
+    if($Name=~/(\d+[\d\.]*\-[\w\.\-]*\d+)\.so(\.|\Z)/)
     { # libMagickCore6-Q16.so.1
         $Pre = $1;
     }
-    elsif($Name=~/\-([a-zA-Z]?\d[\w\.\-]*)\.so(\.|\Z)/)
+    elsif($Name=~/\-([a-zA-Z]?\d+([\w\.\-]*\d+|))\.so(\.|\Z)/)
     { # libMagickCore-6.Q16.so.1
       # libMagickCore-Q16.so.7
         $Pre = $1;
@@ -3139,7 +3139,7 @@ sub createTimeline()
         $Content .= "<td>".showDate($V, $Date)."</td>\n";
         
         if($Soname ne "Off") {
-            $Content .= "<td>".$Sover."</td>\n";
+            $Content .= "<td class='sover'>".$Sover."</td>\n";
         }
         
         if($Changelog ne "Off")
@@ -3352,6 +3352,10 @@ sub createGlobalIndex()
 {
     my @Libs = ();
     
+    if(not -d "timeline") {
+        exitStatus("Error", "can't find timeline/ directory");
+    }
+    
     foreach my $File (listDir("timeline"))
     {
         if($File ne "index.html")
@@ -3392,10 +3396,15 @@ sub createGlobalIndex()
         my $Title = $L;
         # my ($M, $MUrl);
         
-        my $DB = eval(readFile("db/$L/$DB_NAME"));
+        my $DB_P = "db/$L/$DB_NAME";
         
-        if(defined $DB->{"Title"}) {
-            $Title = $DB->{"Title"};
+        if(-f $DB_P)
+        {
+            my $DB = eval(readFile($DB_P));
+            
+            if(defined $DB->{"Title"}) {
+                $Title = $DB->{"Title"};
+            }
         }
         
         $LibAttr{$L}{"Title"} = $Title;

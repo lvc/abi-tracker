@@ -211,19 +211,18 @@ sub check_Cmd($)
     return 0;
 }
 
-sub getMajor($)
+sub getMajor($$)
 {
-    my $V = $_[0];
+    my ($V, $L) = @_;
     
-    $V=~s/\-/./;
+    $V=~s/[\-_]/./g;
     
     my @P = split(/\./, $V);
     
-    if($#P>1) {
-        pop(@P);
+    if($#P>=$L) {
+        return join(".", splice(@P, 0, $L));
     }
-    
-    return join(".", @P);
+    return $V;
 }
 
 return 1;

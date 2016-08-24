@@ -4,7 +4,6 @@ table.summary {
     border-collapse:collapse;
     table-layout:fixed;
 }
-
 table.summary tr, table.summary td, table.summary th
 {
     border:1px solid #777777;
@@ -18,18 +17,15 @@ table.summary th {
     background:#f2f2f2;
     white-space:nowrap;
 }
-
 table.summary td {
     padding-top:20px;
     padding-bottom:20px;
     white-space:nowrap;
 }
-
 a.home {
     font-size:1.2em;
     text-decoration:none;
 }
-
 a.num {
     color:#000000;
     text-decoration:none;
@@ -37,15 +33,12 @@ a.num {
 a.num:hover {
     text-decoration:underline;
 }
-
 a.info {
     text-decoration:none;
 }
-
 .note {
     font-size:0.82em;
 }
-
 .ok {
     background-color:#CCFFCC;
 }
@@ -60,16 +53,23 @@ a.info {
 }
 table.summary td.object {
     text-align:left;
-}
-table.summary td.sl {
-    max-width:100px;
+    max-width:24em;
     white-space:normal;
     word-wrap:break-word;
 }
-
+table.summary td.sl {
+    max-width:6.65em;
+    white-space:normal;
+    word-wrap:break-word;
+}
 table.summary td.comment {
     text-align:center;
     max-width:50px;
+    white-space:normal;
+    word-wrap:break-word;
+}
+table.summary td.sover {
+    max-width:10em;
     white-space:normal;
     word-wrap:break-word;
 }
