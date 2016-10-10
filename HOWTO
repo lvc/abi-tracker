@@ -65,7 +65,12 @@ To uninstall:
 
   abi-tracker -rebuild -target abireport -v X.Y.Z PROFILE.json
 
-9) The home page of the report will be generated to:
+9) Cron job for daily monitoring and analysis:
+
+  abi-monitor -get -build-new PROFILE.json
+  abi-tracker -build PROFILE.json
+
+10) The home page of the report will be generated to:
 
   timeline/<LIBRARY NAME>/index.html
 

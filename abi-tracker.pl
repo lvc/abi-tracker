@@ -2774,6 +2774,11 @@ sub diffHeaders($$)
         $Content=~s/(\Q$File\E)(&nbsp;)/$1 ($V1)$2/;
         $Content=~s/(\Q$File\E)(&nbsp;)/$1 ($V2)$2/;
         
+        $Content=~s&<td class="lineno" valign="top"></td>&&g;
+        $Content=~s&<td class="lineno"></td>&&g;
+        $Content=~s&<th></th>&&g;
+        $Content=~s&<td></td>&&g;
+        
         if($Diff) {
             $Diff .= "<br/><br/>\n";
         }

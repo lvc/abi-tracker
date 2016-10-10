@@ -32,6 +32,10 @@ EXAMPLES:
   abi-tracker -build libssh.json
   abi-tracker -rebuild -target abireport -v 0.7.0 libssh.json
 
+CRON JOB:
+  abi-monitor -get -build-new [profile]
+  abi-tracker -build [profile]
+
 PROFILE FORMAT:
 
 {
