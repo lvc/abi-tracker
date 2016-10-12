@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.8
+# ABI Tracker 1.9
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
@@ -13,7 +13,7 @@
 #
 # REQUIREMENTS
 # ============
-#  Perl 5 (5.8 or newer)
+#  Perl 5
 #  Elfutils (eu-readelf)
 #  ABI Dumper (0.99.16 or newer)
 #  Vtable-Dumper (1.1 or newer)
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.8";
+my $TOOL_VERSION = "1.9";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -1456,7 +1456,7 @@ sub createABIDump($)
     if(not @Objects)
     {
         printMsg("ERROR", "can't find objects");
-        return;
+        return 1;
     }
     
     my $TmpDir = $TMP_DIR."/objects";
@@ -2321,11 +2321,21 @@ sub createABIView_Object($$)
     $Dir .= "/".$Md5;
     my $Output = $Dir."/symbols.html";
     
-    my $Cmd = $ABI_VIEWER." -skip-std -vnum \"$V\" -output \"$Dir\" \"".getDirname($Dump)."\"";
+    my $DumpDir = getDirname($Dump);
+    
+    if(not -d $DumpDir."/debug")
+    {
+        printMsg("ERROR", "please rebuild ABI dumps");
+        return 1;
+    }
+    
+    my $Cmd = $ABI_VIEWER." -skip-std -vnum \"$V\" -output \"$Dir\" \"".$DumpDir."\"";
     
     qx/$Cmd/; # execute
     
     $DB->{"ABIView_D"}{$V}{$Md5}{"Path"} = $Output;
+    
+    return 0;
 }
 
 sub diffABIs($$$$)
@@ -3800,6 +3810,12 @@ sub getToolVer($)
     return `$T -dumpversion`;
 }
 
+sub getToolVerInfo($)
+{
+    my $T = $_[0];
+    return `$T -version`;
+}
+
 sub scenario()
 {
     $Data::Dumper::Sortkeys = 1;
@@ -3849,7 +3865,7 @@ sub scenario()
             exitStatus("Module_Error", "the version of ABI Dumper should be $ABI_DUMPER_VERSION or newer");
         }
         
-        if(cmpVersions_S($Version, "1.0")>=0) {
+        if(getToolVerInfo($ABI_DUMPER)=~/EE/) {
             $ABI_DUMPER_EE = 1;
         }
     }
