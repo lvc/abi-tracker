@@ -41,3 +41,5 @@ SFTP_DEPRECATED
 MagickExport
 WandExport
 MagickPPExport
+_NOEXCEPT
+_LIBCPP_FUNC_VIS

@@ -196,10 +196,9 @@ sub cmpVersions_S($$)
     return 0;
 }
 
-sub check_Cmd($)
+sub checkCmd($)
 {
     my $Cmd = $_[0];
-    return "" if(not $Cmd);
     
     foreach my $Path (sort {length($a)<=>length($b)} split(/:/, $ENV{"PATH"}))
     {

@@ -605,7 +605,13 @@ sub countSymbolsF($$)
         my $Path = $Dump->{"Path"};
         printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\' ($V)");
         
-        my $Count = qx/$ABI_CC -count-symbols \"$Path\" $AccOpts/;
+        my $Cmd_C = "$ABI_CC -count-symbols \"$Path\" $AccOpts";
+        
+        if($Debug) {
+            printMsg("DEBUG", "executing $Cmd_C");
+        }
+        
+        my $Count = qx/$Cmd_C/;
         chomp($Count);
         
         return ($Dump->{"TotalSymbolsFiltered"} = $Count);
@@ -633,7 +639,13 @@ sub countSymbols($)
     
     printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\'");
     
-    my $Total = qx/$ABI_CC -count-symbols \"$Path\"/;
+    my $Cmd_C = "$ABI_CC -count-symbols \"$Path\"";
+    
+    if($Debug) {
+        printMsg("DEBUG", "executing $Cmd_C");
+    }
+    
+    my $Total = qx/$Cmd_C/;
     chomp($Total);
     
     return $Total;
@@ -1674,7 +1686,7 @@ sub createABIView($)
         }
         
         my $Name = $Object;
-        $Name=~s/\Alib(64|32|)\///;
+        $Name=~s/\A(usr\/|)lib(64|32|)\///;
         
         $Report .= "<tr>\n";
         $Report .= "<td class='object'>$Name</td>\n";
@@ -2047,7 +2059,7 @@ sub createABIReport($$)
     foreach my $Object2 (@Objects2)
     {
         my $Name = $Object2;
-        $Name=~s/\Alib(64|32|)\///;
+        $Name=~s/\A(usr\/|)lib(64|32|)\///;
         
         if(defined $Added{$Object2})
         {
@@ -2071,7 +2083,7 @@ sub createABIReport($$)
             $Name=~s/\A.*\///g;
         }
         else {
-            $Name=~s/\Alib(64|32|)\///;
+            $Name=~s/\A(usr\/|)lib(64|32|)\///;
         }
         
         if($Mapped{$Object1})
@@ -2631,7 +2643,7 @@ sub diffHeaders($$)
     
     printMsg("INFO", "Diff headers $V1 and $V2");
     
-    if(not check_Cmd($RFCDIFF))
+    if(not checkCmd($RFCDIFF))
     {
         printMsg("ERROR", "can't find \"$RFCDIFF\"");
         return 0;
@@ -2972,7 +2984,7 @@ sub createTimeline()
     
     writeCss();
     
-    my $Title = showTitle().": API/ABI changes timeline";
+    my $Title = showTitle().": API/ABI changes review";
     my $Desc = "API/ABI compatibility analysis reports for ".showTitle();
     my $Content = composeHTML_Head($Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, getTop("timeline"), "report.css", "");
     $Content .= "<body>\n";
@@ -3049,7 +3061,7 @@ sub createTimeline()
     
     $Content .= getHead("timeline");
     
-    my $ContentHeader = "API/ABI changes timeline";
+    my $ContentHeader = "API/ABI changes review";
     if(defined $Profile->{"ContentHeader"}) {
         $ContentHeader = $Profile->{"ContentHeader"};
     }
@@ -3393,7 +3405,7 @@ sub createGlobalIndex()
     
     $Content .= getHead("global_index");
     
-    $Content .= "<h1>Maintained libraries</h1>\n";
+    $Content .= "<h1>Maintained libraries (".($#Libs+1).")</h1>\n";
     $Content .= "<br/>";
     $Content .= "<br/>";
     
@@ -3559,13 +3571,6 @@ sub checkFiles()
                 
                 $DB->{"ABIDump"}{$V}{$Md5} = \%Info;
             }
-            
-            # my $Dump = $DB->{"ABIDump"}{$V}{$Md5};
-            # if(not defined $Dump->{"TotalSymbols"})
-            # { # support for old data
-            #     print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump ...\n";
-            #     $Dump->{"TotalSymbols"} = countSymbols($Dump);
-            # }
         }
     }
     
@@ -3884,7 +3889,7 @@ sub scenario()
         exitStatus("Module_Error", "cannot find \'$ABI_CC\'");
     }
     
-    my @Reports = ("timeline", "package_diff", "headers_diff", "changelog", "abi_dump", "objects_report", "objects_view", "compat_report", "abi_view");
+    my @Reports = ("timeline", "package_diff", "headers_diff", "changelog", "abi_dump", "objects_report", "objects_view", "compat_report", "abi_view", "graph");
     
     if(my $Profile_Path = $ARGV[0])
     {
