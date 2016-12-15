@@ -1504,6 +1504,10 @@ sub createABIDump($)
                 {
                     $Cmd .= " -use-tu-dump -cache-headers \"$TmpDir\"";
                     
+                    if(my $IncDefines = $Profile->{"IncludeDefines"}) {
+                        $Cmd .= " -include-defines \"$IncDefines\"";
+                    }
+                    
                     if(my $IncPreamble = $Profile->{"IncludePreamble"}) {
                         $Cmd .= " -include-preamble \"$IncPreamble\"";
                     }
@@ -3413,7 +3417,7 @@ sub createGlobalIndex()
     
     $Content .= "<tr>\n";
     $Content .= "<th>Name</th>\n";
-    $Content .= "<th>ABI Timeline</th>\n";
+    $Content .= "<th>ABI Changes<br/>Review</th>\n";
     # $Content .= "<th>Maintainer</th>\n";
     $Content .= "</tr>\n";
     
@@ -3444,7 +3448,7 @@ sub createGlobalIndex()
     {
         $Content .= "<tr>\n";
         $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>\n";
-        $Content .= "<td><a href='timeline/$L/index.html'>timeline</a></td>\n";
+        $Content .= "<td><a href='timeline/$L/index.html'>review</a></td>\n";
         
         # my $M = $LibAttr{$L}{"Maintainer"};
         # if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
