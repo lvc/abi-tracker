@@ -1,9 +1,9 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.9
+# ABI Tracker 1.10
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
-# Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -42,7 +42,7 @@ use File::Basename qw(dirname basename);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.9";
+my $TOOL_VERSION = "1.10";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 
@@ -65,7 +65,7 @@ my $ABI_VIEWER = "abi-viewer";
 
 my ($Help, $DumpVersion, $Build, $Rebuild, $DisableCache,
 $TargetVersion, $TargetElement, $Clear, $GlobalIndex, $Deploy,
-$Debug);
+$JsonReport, $Debug);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -83,11 +83,11 @@ my %ERROR_CODE = (
     "Module_Error"=>9
 );
 
-my $HomePage = "http://abi-laboratory.pro/";
+my $HomePage = "https://abi-laboratory.pro/";
 
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
-Copyright (C) 2016 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
 License: GPLv2.0+ or LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
@@ -107,14 +107,15 @@ GetOptions("h|help!" => \$Help,
 # general options
   "build!" => \$Build,
   "rebuild!" => \$Rebuild,
-# internal options
   "v=s" => \$TargetVersion,
   "t|target=s" => \$TargetElement,
   "clear!" => \$Clear,
   "global-index!" => \$GlobalIndex,
   "disable-cache!" => \$DisableCache,
   "deploy=s" => \$Deploy,
-  "debug!" => \$Debug
+  "debug!" => \$Debug,
+# internal options
+  "json-report=s" => \$JsonReport
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -1517,8 +1518,17 @@ sub createABIDump($)
                         $Cmd .= " -include-paths \"".$Profile->{"IncludePaths"}."\"";
                     }
                 }
-                else {
+                else
+                {
                     $Cmd .= " -ignore-tags \"$MODULES_DIR/ignore.tags\"";
+                    
+                    if(my $CtagsDef = $Profile->{"CtagsDef"})
+                    {
+                        foreach my $Def (@{$CtagsDef})
+                        {
+                            $Cmd .= " -ctags-def \"$Def\"";
+                        }
+                    }
                 }
                 
                 if($Profile->{"ReimplementStd"}) {
@@ -3379,6 +3389,116 @@ sub createTimeline()
     printMsg("INFO", "The index has been generated to: $Output");
 }
 
+sub createJsonReport($)
+{
+    my $Dir = $_[0];
+    
+    my $MaxLen_C = 9;
+    my $MaxLen_V = 16;
+    my @Common = ();
+    
+    my %ShowKey = (
+        "Source_BC" => "Src_BC",
+        "Source_TotalProblems" => "Src_TotalProblems"
+    );
+    
+    foreach my $K ("Title", "SourceUrl", "Tracker", "Maintainer")
+    {
+        my $Sp = "";
+        foreach (0 .. $MaxLen_C - length($K)) {
+            $Sp .= " ";
+        }
+        
+        my $Val = undef;
+        
+        if(defined $Profile->{$K}) {
+            $Val = $Profile->{$K};
+        }
+        elsif($K eq "Tracker") {
+            $Val = $HomePage."tracker/timeline/".$TARGET_LIB."/";
+        }
+        elsif($K eq "Title") {
+            $Val = $TARGET_LIB;
+        }
+        
+        if($Val) {
+            push(@Common, "\"$K\": ".$Sp."\"$Val\"");
+        }
+    }
+    
+    my @RInfo = ();
+    my @Versions = getVersionsList();
+    
+    foreach my $P (0 .. $#Versions)
+    {
+        my $V = $Versions[$P];
+        
+        if($V eq "current") {
+            next;
+        }
+        
+        my $O_V = undef;
+        if($P<$#Versions) {
+            $O_V = $Versions[$P+1];
+        }
+        
+        if(defined $DB->{"ABIReport"} and defined $DB->{"ABIReport"}{$O_V}
+        and defined $DB->{"ABIReport"}{$O_V}{$V})
+        {
+            my $ABIReport = $DB->{"ABIReport"}{$O_V}{$V};
+            my @VInfo = ();
+            
+            foreach my $K ("Version", "From", "BC", "Added", "Removed", "TotalProblems", "Source_BC", "Source_TotalProblems", "ObjectsAdded", "ObjectsRemoved", "ChangedSoname", "TotalObjects")
+            {
+                my $Val = undef;
+                
+                if(defined $ABIReport->{$K}) {
+                    $Val = $ABIReport->{$K};
+                }
+                elsif($K eq "Version") {
+                    $Val = $V;
+                }
+                elsif($K eq "From") {
+                    $Val = $O_V;
+                }
+                else {
+                    next;
+                }
+                
+                if($K eq "BC" or $K eq "Source_BC") {
+                    $Val .= "%";
+                }
+                
+                my $SK = $K;
+                
+                if(defined $ShowKey{$K}) {
+                    $SK = $ShowKey{$K};
+                }
+                
+                my $Sp = "";
+                foreach (0 .. $MaxLen_V - length($SK)) {
+                    $Sp .= " ";
+                }
+                
+                if($K!~/BC|Version/ and int($Val) eq $Val)
+                { # integer
+                    push(@VInfo, "\"$SK\": $Sp".$Val);
+                }
+                else
+                { # string
+                    push(@VInfo, "\"$SK\": $Sp\"".$Val."\"");
+                }
+            }
+            
+            push(@RInfo, "{\n    ".join(",\n    ", @VInfo)."\n  }");
+        }
+    }
+    
+    my $Report = "{\n  ".join(",\n  ", @Common).",\n\n  \"Reports\": [\n  ".join(",\n  ", @RInfo)."]\n}\n";
+    
+    writeFile($Dir."/$TARGET_LIB.json", $Report);
+}
+
 sub createGlobalIndex()
 {
     my @Libs = ();
@@ -3389,8 +3509,7 @@ sub createGlobalIndex()
     
     foreach my $File (listDir("timeline"))
     {
-        if($File ne "index.html")
-        {
+        if($File ne "index.html") {
             push(@Libs, $File);
         }
     }
@@ -3972,6 +4091,10 @@ sub scenario()
         writeDB($DB_PATH);
         
         createTimeline();
+        
+        if($JsonReport) {
+            createJsonReport($JsonReport);
+        }
     }
     
     if($GlobalIndex) {
