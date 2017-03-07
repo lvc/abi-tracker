@@ -1,7 +1,7 @@
 ##################################################################
-# Module for ABI Tracker with basic functions
+# A module with simple functions
 #
-# Copyright (C) 2015-2016 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -111,39 +111,6 @@ sub writeFile($$)
     open(FILE, ">", $Path) || die ("can't open file \'$Path\': $!\n");
     print FILE $Content;
     close(FILE);
-}
-
-sub composeHTML_Head($$$$$)
-{
-    my ($Title, $Keywords, $Description, $TopDir, $Styles, $Scripts) = @_;
-    
-    my $CommonStyles = "common.css";
-    
-    if($Styles)
-    {
-        $CommonStyles = "<link rel=\"stylesheet\" type=\"text/css\" href=\"$TopDir/css/$CommonStyles\" />";
-        $Styles = "<link rel=\"stylesheet\" type=\"text/css\" href=\"$TopDir/css/$Styles\" />";
-    }
-    
-    if($Scripts) {
-        $Scripts = "<script type=\"text/javascript\" src=\"$TopDir/js/$Scripts\"></script>";
-    }
-    
-    return "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">
-    <html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" lang=\"en\">
-    <head>
-    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />
-    <meta name=\"keywords\" content=\"$Keywords\" />
-    <meta name=\"description\" content=\"$Description\" />
-    $CommonStyles
-    $Styles
-    $Scripts
-    
-    <title>
-        $Title
-    </title>
-    
-    </head>\n";
 }
 
 sub extractPackage($$)

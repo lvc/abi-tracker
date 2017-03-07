@@ -26,3 +26,8 @@ a.tool {
     text-decoration:none;
     color:Black;
 }
+
+.rss {
+    height:1.2em;
+    vertical-align:bottom;
+}

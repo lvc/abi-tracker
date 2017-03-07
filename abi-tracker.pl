@@ -39,6 +39,9 @@ Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
 use File::Path qw(mkpath rmtree);
 use File::Temp qw(tempdir);
 use File::Basename qw(dirname basename);
+use File::Copy qw(copy);
+use Time::Local;
+use POSIX qw(strftime);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
@@ -49,6 +52,12 @@ my $TMP_DIR = tempdir(CLEANUP=>1);
 # Internal modules
 my $MODULES_DIR = get_Modules();
 push(@INC, dirname($MODULES_DIR));
+
+# Basic modules
+my %LoadedModules = ();
+loadModule("Basic");
+loadModule("Input");
+loadModule("Utils");
 
 my $ABI_DUMPER = "abi-dumper";
 my $ABI_DUMPER_VERSION = "0.99.16";
@@ -62,10 +71,6 @@ my $PKGDIFF = "pkgdiff";
 my $PKGDIFF_VERSION = "1.6.4";
 
 my $ABI_VIEWER = "abi-viewer";
-
-my ($Help, $DumpVersion, $Build, $Rebuild, $DisableCache,
-$TargetVersion, $TargetElement, $Clear, $GlobalIndex, $Deploy,
-$JsonReport, $Debug);
 
 my $CmdName = basename($0);
 my $ORIG_DIR = cwd();
@@ -102,20 +107,22 @@ if($#ARGV==-1)
     exit(0);
 }
 
-GetOptions("h|help!" => \$Help,
-  "dumpversion!" => \$DumpVersion,
+GetOptions("h|help!" => \$In::Opt{"Help"},
+  "dumpversion!" => \$In::Opt{"DumpVersion"},
 # general options
-  "build!" => \$Build,
-  "rebuild!" => \$Rebuild,
-  "v=s" => \$TargetVersion,
-  "t|target=s" => \$TargetElement,
-  "clear!" => \$Clear,
-  "global-index!" => \$GlobalIndex,
-  "disable-cache!" => \$DisableCache,
-  "deploy=s" => \$Deploy,
-  "debug!" => \$Debug,
+  "build!" => \$In::Opt{"Build"},
+  "rebuild!" => \$In::Opt{"Rebuild"},
+  "v=s" => \$In::Opt{"TargetVersion"},
+  "t|target=s" => \$In::Opt{"TargetElement"},
+  "clear!" => \$In::Opt{"Clear"},
+  "global-index!" => \$In::Opt{"GlobalIndex"},
+  "disable-cache!" => \$In::Opt{"DisableCache"},
+  "deploy=s" => \$In::Opt{"Deploy"},
+  "debug!" => \$In::Opt{"Debug"},
 # internal options
-  "json-report=s" => \$JsonReport
+  "json-report=s" => \$In::Opt{"JsonReport"},
+  "regen-dump!" => \$In::Opt{"RegenDump"},
+  "rss!" => \$In::Opt{"GenRss"}
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -237,11 +244,15 @@ sub get_Modules()
 sub loadModule($)
 {
     my $Name = $_[0];
+    if(defined $LoadedModules{$Name}) {
+        return;
+    }
     my $Path = $MODULES_DIR."/Internals/$Name.pm";
     if(not -f $Path) {
         exitStatus("Module_Error", "can't access \'$Path\'");
     }
     require $Path;
+    $LoadedModules{$Name} = 1;
 }
 
 sub readModule($$)
@@ -354,9 +365,9 @@ sub skipVersion_T($)
 {
     my $V = $_[0];
     
-    if(defined $TargetVersion)
+    if(defined $In::Opt{"TargetVersion"})
     {
-        if($V ne $TargetVersion)
+        if($V ne $In::Opt{"TargetVersion"})
         {
             return 1;
         }
@@ -394,11 +405,11 @@ sub buildData()
 {
     my @Versions = getVersionsList();
     
-    if($TargetVersion)
+    if($In::Opt{"TargetVersion"})
     {
-        if(not grep {$_ eq $TargetVersion} @Versions)
+        if(not grep {$_ eq $In::Opt{"TargetVersion"}} @Versions)
         {
-            printMsg("ERROR", "unknown version number \'$TargetVersion\'");
+            printMsg("ERROR", "unknown version number \'".$In::Opt{"TargetVersion"}."\'");
         }
     }
     
@@ -465,13 +476,13 @@ sub buildData()
         }
     }
     
-    if($Rebuild and not $TargetElement and $TargetVersion)
+    if($In::Opt{"Rebuild"} and not $In::Opt{"TargetElement"} and $In::Opt{"TargetVersion"})
     { # rebuild previous ABI dump
         my $PV = undef;
         
         foreach my $V (reverse(@Versions))
         {
-            if($V eq $TargetVersion)
+            if($V eq $In::Opt{"TargetVersion"})
             {
                 if(defined $PV)
                 {
@@ -540,8 +551,8 @@ sub buildData()
         }
     }
     
-    if(defined $TargetElement
-    and $TargetElement eq "graph")
+    if(defined $In::Opt{"TargetElement"}
+    and $In::Opt{"TargetElement"} eq "graph")
     {
         my $First = $Versions[$#Versions];
         my $Total = 0;
@@ -594,7 +605,7 @@ sub countSymbolsF($$)
     
     if(defined $Dump->{"TotalSymbolsFiltered"})
     {
-        if(not defined $DisableCache) {
+        if(not defined $In::Opt{"DisableCache"}) {
             return $Dump->{"TotalSymbolsFiltered"};
         }
     }
@@ -608,7 +619,7 @@ sub countSymbolsF($$)
         
         my $Cmd_C = "$ABI_CC -count-symbols \"$Path\" $AccOpts";
         
-        if($Debug) {
+        if($In::Opt{"Debug"}) {
             printMsg("DEBUG", "executing $Cmd_C");
         }
         
@@ -642,7 +653,7 @@ sub countSymbols($)
     
     my $Cmd_C = "$ABI_CC -count-symbols \"$Path\"";
     
-    if($Debug) {
+    if($In::Opt{"Debug"}) {
         printMsg("DEBUG", "executing $Cmd_C");
     }
     
@@ -692,6 +703,8 @@ sub simpleGraph($$$)
             $MaxRange = $Val;
         }
         
+        my $Few = (defined $Profile->{"GraphFewXTics"} and $Profile->{"GraphFewXTics"} eq "On");
+        
         my $V_S = $V;
         
         if(defined $Profile->{"GraphShortXTics"})
@@ -719,8 +732,8 @@ sub simpleGraph($$$)
         
         if($_==0 or $_==$#Vs
         or $_==int($#Vs/2)
-        or $_==int($#Vs/4)
-        or $_==int(3*$#Vs/4)) {
+        or (not $Few and $_==int($#Vs/4))
+        or (not $Few and $_==int(3*$#Vs/4))) {
             $Content .= "  ".$V_S;
         }
         $Content .= "\n";
@@ -828,7 +841,7 @@ sub detectSoname($)
     
     my $V = $_[0];
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"Soname"}{$V})
         {
@@ -1058,7 +1071,7 @@ sub createChangelog($$)
         }
     }
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"Changelog"}{$V})
         {
@@ -1214,7 +1227,7 @@ sub toHtml($$$)
     }
     $Content = getHead("changelog").$Content;
     
-    $Content = composeHTML_Head($Title, $Keywords, $Desc, getTop("changelog"), "changelog.css", "")."\n<body>\n$Content\n</body>\n</html>\n";
+    $Content = composeHTML_Head("changelog", $Title, $Keywords, $Desc, "changelog.css")."\n<body>\n$Content\n</body>\n</html>\n";
     
     return $Content;
 }
@@ -1315,9 +1328,9 @@ sub checkTarget($)
 {
     my $Elem = $_[0];
     
-    if(defined $TargetElement)
+    if(defined $In::Opt{"TargetElement"})
     {
-        if($Elem ne $TargetElement)
+        if($Elem ne $In::Opt{"TargetElement"})
         {
             return 0;
         }
@@ -1330,7 +1343,7 @@ sub detectDate($)
 {
     my $V = $_[0];
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"Date"}{$V})
         {
@@ -1438,7 +1451,7 @@ sub createABIDump($)
 {
     my $V = $_[0];
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIDump"}{$V})
         {
@@ -1549,7 +1562,7 @@ sub createABIDump($)
             $Cmd .= " -debug";
         }
         
-        if($Debug) {
+        if($In::Opt{"Debug"}) {
             printMsg("DEBUG", "executing $Cmd");
         }
         
@@ -1624,11 +1637,11 @@ sub createABIView($)
     my $V = $_[0];
     
     if($Profile->{"Versions"}{$V}{"ABIView"} ne "On"
-    and not (defined $TargetVersion and defined $TargetElement)) {
+    and not (defined $In::Opt{"TargetVersion"} and defined $In::Opt{"TargetElement"})) {
         return 0;
     }
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIView"}{$V})
         {
@@ -1725,7 +1738,7 @@ sub createABIView($)
     my $Keywords = showTitle().", ABI, view, report";
     my $Desc = "View objects ABI of the $TARGET_LIB $V";
     
-    $Report = composeHTML_Head($Title, $Keywords, $Desc, getTop("objects_view"), "report.css", "")."\n<body>\n$Report\n</body>\n</html>\n";
+    $Report = composeHTML_Head("objects_view", $Title, $Keywords, $Desc, "report.css")."\n<body>\n$Report\n</body>\n</html>\n";
     
     my $Dir = "objects_view/$TARGET_LIB/$V";
     my $Output = $Dir."/report.html";
@@ -1739,7 +1752,7 @@ sub createABIReport($$)
 {
     my ($V1, $V2) = @_;
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIReport"}{$V1}{$V2})
         {
@@ -1821,6 +1834,12 @@ sub createABIReport($$)
                 }
             }
         }
+    }
+    
+    if(defined $In::Opt{"RegenDump"})
+    {
+        print "INFO: Regenerating ABI dump for $V1\n";
+        delete($DB->{"ABIDump"}{$V1});
     }
     
     if(not defined $DB->{"ABIDump"}{$V1}) {
@@ -2024,7 +2043,7 @@ sub createABIReport($$)
     
     if(not $ObjectsReport)
     {
-        if($Rebuild)
+        if($In::Opt{"Rebuild"})
         {
             # Remove old reports
             my $CDir = "compat_report/$TARGET_LIB/$V1/$V2";
@@ -2215,7 +2234,7 @@ sub createABIReport($$)
     my $Keywords = showTitle().", ABI, changes, compatibility, report";
     my $Desc = "ABI changes/compatibility report between $V1 and $V2 versions of the $TARGET_LIB";
     
-    $Report = composeHTML_Head($Title, $Keywords, $Desc, getTop("objects_report"), "report.css", "")."\n<body>\n$Report\n</body>\n</html>\n";
+    $Report = composeHTML_Head("objects_report", $Title, $Keywords, $Desc, "report.css")."\n<body>\n$Report\n</body>\n</html>\n";
     
     my $Dir = "objects_report/$TARGET_LIB/$V1/$V2";
     my $Output = $Dir."/report.html";
@@ -2327,7 +2346,7 @@ sub createABIView_Object($$)
 {
     my ($V, $Obj) = @_;
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIView_D"}{$V}
         and defined $DB->{"ABIView_D"}{$V}{getMd5($Obj)})
@@ -2369,7 +2388,7 @@ sub diffABIs($$$$)
     my ($V1, $V2, $Obj1, $Obj2) = @_;
     my $Md5 = getMd5($Obj1, $Obj2);
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIDiff_D"}{$V1}{$V2}
         and defined $DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5})
@@ -2403,7 +2422,7 @@ sub compareABIs($$$$)
     
     my $Md5 = getMd5($Obj1, $Obj2);
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"ABIReport_D"}{$V1}{$V2}
         and defined $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5})
@@ -2469,7 +2488,7 @@ sub compareABIs($$$$)
         $Cmd .= " -limit-affected 2";
     }
     
-    if($Debug) {
+    if($In::Opt{"Debug"}) {
         printMsg("DEBUG", "executing $Cmd");
     }
     
@@ -2571,11 +2590,11 @@ sub createPkgdiff($$)
     my ($V1, $V2) = @_;
     
     if($Profile->{"Versions"}{$V2}{"PkgDiff"} ne "On"
-    and not (defined $TargetVersion and defined $TargetElement)) {
+    and not (defined $In::Opt{"TargetVersion"} and defined $In::Opt{"TargetElement"})) {
         return 0;
     }
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"PackageDiff"}{$V1}{$V2}) {
             return 0;
@@ -2639,11 +2658,11 @@ sub diffHeaders($$)
     my ($V1, $V2) = @_;
     
     if($Profile->{"Versions"}{$V2}{"HeadersDiff"} ne "On"
-    and not (defined $TargetVersion and defined $TargetElement)) {
+    and not (defined $In::Opt{"TargetVersion"} and defined $In::Opt{"TargetElement"})) {
         return 0;
     }
     
-    if(not $Rebuild)
+    if(not $In::Opt{"Rebuild"})
     {
         if(defined $DB->{"HeadersDiff"}{$V1}{$V2})
         {
@@ -2834,7 +2853,7 @@ sub diffHeaders($$)
     
     $Diff = "<table width='100%' cellpadding='0' cellspacing='0'><tr><td>$Diff</td></tr></table>";
     
-    $Diff = composeHTML_Head($Title, $Keywords, $Desc, getTop("headers_diff"), "headers_diff.css", "")."\n<body>\n$Diff\n</body>\n</html>\n";
+    $Diff = composeHTML_Head("headers_diff", $Title, $Keywords, $Desc, "headers_diff.css")."\n<body>\n$Diff\n</body>\n</html>\n";
     
     my $Output = "headers_diff/$TARGET_LIB/$V1/$V2";
     writeFile($Output."/diff.html", $Diff);
@@ -2854,28 +2873,6 @@ sub showTitle()
     }
     
     return $TARGET_LIB;
-}
-
-sub getTop($)
-{
-    my $Page = $_[0];
-    
-    my $Rel = "";
-    
-    if($Page=~/\A(changelog|objects_view)\Z/) {
-        $Rel = "../../..";
-    }
-    elsif($Page=~/\A(objects_report|headers_diff)\Z/) {
-        $Rel = "../../../..";
-    }
-    elsif($Page=~/\A(timeline)\Z/) {
-        $Rel = "../..";
-    }
-    elsif($Page=~/\A(global_index)\Z/) {
-        $Rel = ".";
-    }
-    
-    return $Rel;
 }
 
 sub getHead($)
@@ -2958,6 +2955,14 @@ sub getS($)
     return "";
 }
 
+sub getRssDate($)
+{
+    my $Date = $_[0];
+    
+    my ($Year, $Mon, $Mday, $Hour, $Min) = split(/[\s\-:]+/, $Date);localtime
+    return strftime('%a, %d %b %Y %T', 0, $Min, $Hour, $Mday, $Mon-1, $Year-1900)." ".strftime('%z', localtime);
+}
+
 sub getVersionsList()
 {
     my @Versions = keys(%{$Profile->{"Versions"}});
@@ -2992,18 +2997,38 @@ sub writeCss()
     writeFile("css/changelog.css", readModule("Styles", "Changelog.css"));
 }
 
+sub writeImages()
+{
+    my $ImgDir = $MODULES_DIR."/Internals/Images";
+    if(not -d "images/") {
+        mkpath("images/");
+    }
+    foreach my $Img (listDir($ImgDir)) {
+        copy($ImgDir."/".$Img, "images/");
+    }
+}
+
 sub createTimeline()
 {
     $DB->{"Updated"} = time;
     
     writeCss();
+    writeImages();
     
     my $Title = showTitle().": API/ABI changes review";
     my $Desc = "API/ABI compatibility analysis reports for ".showTitle();
-    my $Content = composeHTML_Head($Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, getTop("timeline"), "report.css", "");
+    
+    my $Content = composeHTML_Head("timeline", $Title, $TARGET_LIB.", ABI, API, compatibility, report", $Desc, "report.css");
     $Content .= "<body>\n";
     
+    my @Rss = ();
+    my $RssLink = "$HomePage/tracker/timeline/$TARGET_LIB";
+    
     my @Versions = getVersionsList();
+    
+    if(not @Versions) {
+        return;
+    }
     
     my $CompatRate = "On";
     my $Soname = "On";
@@ -3078,6 +3103,10 @@ sub createTimeline()
     my $ContentHeader = "API/ABI changes review";
     if(defined $Profile->{"ContentHeader"}) {
         $ContentHeader = $Profile->{"ContentHeader"};
+    }
+    
+    if($In::Opt{"GenRss"}) {
+        $ContentHeader .= " <a rel='alternate' type='application/rss+xml' href='../../rss/$TARGET_LIB/feed.rss' title='RSS: subscribe for ABI reports'><img src='../../images/RSS.png' class='rss' alt='RSS' /></a>";
     }
     
     $Content .= "<h1>".$ContentHeader."</h1>\n";
@@ -3345,6 +3374,44 @@ sub createTimeline()
         {
             $Content .= "<tr><td class='comment' colspan=\'$Cols\'>NOTE: $Comment</td></tr>\n";
         }
+        
+        if($In::Opt{"GenRss"} and defined $ABIReport and $V ne "current")
+        {
+            my @RssSum = ("Binary compatibility: ".$ABIReport->{"BC"}."%");
+            if(my $TotalProblems = $ABIReport->{"TotalProblems"})
+            {
+                if($ABIReport->{"BC"} eq 100) {
+                    push(@RssSum, "$TotalProblems warning".getS($TotalProblems));
+                }
+                else {
+                    push(@RssSum, "$TotalProblems problem".getS($TotalProblems));
+                }
+            }
+            if($ABIReport->{"ChangedSoname"}) {
+                push(@RssSum, "changed SONAME");
+            }
+            if(my $ObjectsAdded = $ABIReport->{"ObjectsAdded"}) {
+                push(@RssSum, "added $ObjectsAdded object".getS($ObjectsAdded));
+            }
+            if(my $ObjectsRemoved = $ABIReport->{"ObjectsRemoved"}) {
+                push(@RssSum, "removed $ObjectsRemoved object".getS($ObjectsRemoved));
+            }
+            if(my $Added = $ABIReport->{"Added"}) {
+                push(@RssSum, "added $Added symbol".getS($Added));
+            }
+            if(my $Removed = $ABIReport->{"Removed"}) {
+                push(@RssSum, "removed $Removed symbol".getS($Removed));
+            }
+            my $RssItem = "<item>\n";
+            $RssItem .= "    <title>".showTitle()." $V</title>\n";
+            $RssItem .= "    <link>$RssLink</link>\n";
+            $RssItem .= "    <description>".join(", ", @RssSum).".</description>\n";
+            $RssItem .= "    <pubDate>".getRssDate($DB->{"Date"}{$V})."</pubDate>\n";
+            $RssItem .= "</item>";
+            
+            $RssItem=~s/\n/\n    /gs;
+            push(@Rss, "    ".$RssItem);
+        }
     }
     
     $Content .= "</table>\n";
@@ -3387,11 +3454,30 @@ sub createTimeline()
     my $Output = "timeline/".$TARGET_LIB."/index.html";
     writeFile($Output, $Content);
     printMsg("INFO", "The index has been generated to: $Output");
+    
+    if($In::Opt{"GenRss"})
+    {
+        my $RssFeed = "<?xml version='1.0' encoding='UTF-8' ?>\n";
+        $RssFeed .= "<rss version='2.0'>\n\n";
+        $RssFeed .= "<channel>\n";
+        $RssFeed .= "<title>ABI changes review for ".showTitle()."</title>\n";
+        $RssFeed .= "<link>$RssLink</link>\n";
+        $RssFeed .= "<description>Binary compatibility analysis reports for ".showTitle()."</description>\n";
+        $RssFeed .= join("\n", @Rss)."\n";
+        $RssFeed .= "</channel>\n\n";
+        $RssFeed .= "</rss>\n";
+        
+        writeFile("rss/".$TARGET_LIB."/feed.rss", $RssFeed);
+    }
 }
 
 sub createJsonReport($)
 {
     my $Dir = $_[0];
+    
+    if(not -d $Dir) {
+        exitStatus("Access_Error", "can't access directory \'$Dir\'");
+    }
     
     my $MaxLen_C = 9;
     my $MaxLen_V = 16;
@@ -3520,10 +3606,11 @@ sub createGlobalIndex()
     }
     
     writeCss();
+    writeImages();
     
-    my $Title = "Maintained libraries";
+    my $Title = "ABI Tracker: Maintained libraries";
     my $Desc = "List of maintained libraries";
-    my $Content = composeHTML_Head($Title, "", $Desc, getTop("global_index"), "report.css", "");
+    my $Content = composeHTML_Head("global_index", $Title, "", $Desc, "report.css");
     $Content .= "<body>\n";
     
     $Content .= getHead("global_index");
@@ -3950,31 +4037,31 @@ sub scenario()
     
     $SIG{INT} = \&safeExit;
     
-    if($Rebuild) {
-        $Build = 1;
+    if($In::Opt{"Rebuild"}) {
+        $In::Opt{"Build"} = 1;
     }
     
-    if($TargetElement)
+    if($In::Opt{"TargetElement"})
     {
-        if($TargetElement!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport)\Z/)
+        if($In::Opt{"TargetElement"}!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport)\Z/)
         {
             exitStatus("Error", "the value of -target option should be one of the following: date, soname, changelog, abidump, abireport, rfcdiff, pkgdiff.");
         }
     }
     
-    if($TargetElement eq "objectsreport")
+    if($In::Opt{"TargetElement"} eq "objectsreport")
     {
-        $TargetElement = "abireport";
+        $In::Opt{"TargetElement"} = "abireport";
         $ObjectsReport = 1;
     }
     
-    if($DumpVersion)
+    if($In::Opt{"DumpVersion"})
     {
         printMsg("INFO", $TOOL_VERSION);
         exit(0);
     }
     
-    if($Help)
+    if($In::Opt{"Help"})
     {
         printMsg("INFO", $HelpMessage);
         exit(0);
@@ -3984,8 +4071,6 @@ sub scenario()
         exitStatus("Error", "Can't execute inside the Java API tracker home directory");
     }
     
-    loadModule("Basic");
-
     # check ABI Dumper
     if(my $Version = getToolVer($ABI_DUMPER))
     {
@@ -4060,7 +4145,10 @@ sub scenario()
         $TARGET_LIB = $Profile->{"Name"};
         $DB_PATH = "db/".$TARGET_LIB."/".$DB_NAME;
         
-        if($Clear)
+        $In::Opt{"TargetLib"} = $TARGET_LIB;
+        $In::Opt{"DBPath"} = $DB_PATH;
+        
+        if($In::Opt{"Clear"})
         {
             printMsg("INFO", "Remove $DB_PATH");
             unlink($DB_PATH);
@@ -4082,7 +4170,7 @@ sub scenario()
         checkDB();
         checkFiles();
         
-        if($Build)
+        if($In::Opt{"Build"})
         {
             writeDB($DB_PATH);
             buildData();
@@ -4090,31 +4178,32 @@ sub scenario()
         
         writeDB($DB_PATH);
         
-        createTimeline();
-        
-        if($JsonReport) {
-            createJsonReport($JsonReport);
+        if(my $ToDir = $In::Opt{"JsonReport"}) {
+            createJsonReport($ToDir);
+        }
+        else {
+            createTimeline();
         }
     }
     
-    if($GlobalIndex) {
+    if($In::Opt{"GlobalIndex"}) {
         createGlobalIndex();
     }
     
-    if($Deploy)
+    if(my $ToDir = $In::Opt{"Deploy"})
     {
-        printMsg("INFO", "Deploy to $Deploy");
-        $Deploy = abs_path($Deploy);
+        printMsg("INFO", "Deploy to $ToDir");
+        $ToDir = abs_path($ToDir);
         
-        if(not -d $Deploy) {
-            mkpath($Deploy);
+        if(not -d $ToDir) {
+            mkpath($ToDir);
         }
         
         if($TARGET_LIB)
         {
             # clear deploy directory
             foreach my $Dir (@Reports) {
-                rmtree($Deploy."/".$Dir."/".$TARGET_LIB);
+                rmtree($ToDir."/".$Dir."/".$TARGET_LIB);
             }
             
             # copy reports
@@ -4123,18 +4212,18 @@ sub scenario()
                 if(-d $Dir."/".$TARGET_LIB)
                 {
                     printMsg("INFO", "Copy $Dir/$TARGET_LIB");
-                    mkpath($Deploy."/".$Dir);
-                    system("cp -fr \"$Dir/$TARGET_LIB\" \"$Deploy/$Dir/\"");
+                    mkpath($ToDir."/".$Dir);
+                    system("cp -fr \"$Dir/$TARGET_LIB\" \"$ToDir/$Dir/\"");
                 }
             }
             printMsg("INFO", "Copy css");
-            system("cp -fr css \"$Deploy/\"");
+            system("cp -fr css \"$ToDir/\"");
         }
         else
         {
             # clear deploy directory
             foreach my $Dir (@Reports) {
-                rmtree($Deploy."/".$Dir);
+                rmtree($ToDir."/".$Dir);
             }
             
             # copy reports
@@ -4143,11 +4232,11 @@ sub scenario()
                 if(-d $Dir)
                 {
                     printMsg("INFO", "Copy $Dir");
-                    system("cp -fr \"$Dir\" \"$Deploy/\"");
+                    system("cp -fr \"$Dir\" \"$ToDir/\"");
                 }
             }
             printMsg("INFO", "Copy css");
-            system("cp -fr css \"$Deploy/\"");
+            system("cp -fr css \"$ToDir/\"");
         }
     }
 }
