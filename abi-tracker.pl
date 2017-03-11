@@ -2959,7 +2959,7 @@ sub getRssDate($)
 {
     my $Date = $_[0];
     
-    my ($Year, $Mon, $Mday, $Hour, $Min) = split(/[\s\-:]+/, $Date);localtime
+    my ($Year, $Mon, $Mday, $Hour, $Min) = split(/[\s\-:]+/, $Date);
     return strftime('%a, %d %b %Y %T', 0, $Min, $Hour, $Mday, $Mon-1, $Year-1900)." ".strftime('%z', localtime);
 }
 
