@@ -45,6 +45,9 @@ a.info {
 .warning {
     background-color:#F4F4AF;
 }
+.almost_compatible {
+    background-color:#FFDAA3;
+}
 .incompatible, .removed {
     background-color:#FFCCCC;
 }
@@ -72,4 +75,10 @@ table.summary td.sover {
     max-width:10em;
     white-space:normal;
     word-wrap:break-word;
+}
+table.summary th.bc {
+    min-width:3em;
+}
+table.summary th.sc {
+    min-width:3em;
 }
