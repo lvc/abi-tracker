@@ -1620,13 +1620,15 @@ sub getObjectName($$)
     }
     elsif($T eq "SuperShort")
     {
-        if($Name=~/\A(.+?)(\d+[\d\.]*\-[\w\.\-]*)\.so\./) {
+        if($Name=~/\A(.+?)[\-\_]*(\d+[\d\.]*\-[\w\.\-]*)\.so(\.|\Z)/)
+        { # libABC-4.6.6-alpha01.so
             return $1;
         }
-        elsif($Name=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so\./) {
+        elsif($Name=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so(\.|\Z)/) {
             return $1;
         }
-        elsif($Name=~/\A(.+?)[\d\.\-\_]*\.so[\d\.]*\Z/) {
+        elsif($Name=~/\A(.+?)[\d\.\-\_]*\.so(\.|\Z)/)
+        { # libABC-4.6.5.so
             return $1;
         }
     }
@@ -3064,7 +3066,7 @@ sub getHead($)
     
     my $Head = "";
     
-    $Head .= "<table cellpadding='0' cellspacing='0'>";
+    $Head .= "<table cellpadding='0' cellspacing='0'>\n";
     $Head .= "<tr>";
     
     $Head .= "<td align='center'>";
@@ -3090,7 +3092,7 @@ sub getHead($)
         }
     }
     
-    $Head .= "</tr></table>";
+    $Head .= "</tr>\n</table>\n";
     
     $Head .= "<hr/>\n";
     $Head .= "<br/>\n";
@@ -3521,7 +3523,7 @@ sub createTimeline()
                         $CClass_Source = "";
                     }
                     
-                    if($BC_Summary eq $BC_Summary_Source) {
+                    if($BC_Summary eq $BC_Summary_Source and $CClass eq $CClass_Source) {
                         $Content .= "<td colspan='2' class=\'$CClass\'>$BC_Summary</td>\n";
                     }
                     else
@@ -3917,8 +3919,8 @@ sub createGlobalIndex()
     $Content .= getHead("global_index");
     
     $Content .= "<h1>Maintained libraries (".($#Libs+1).")</h1>\n";
-    $Content .= "<br/>";
-    $Content .= "<br/>";
+    $Content .= "<br/>\n";
+    $Content .= "<br/>\n";
     
     $Content .= "<table cellpadding='3' class='summary'>\n";
     
@@ -3953,9 +3955,9 @@ sub createGlobalIndex()
     
     foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
     {
-        $Content .= "<tr>\n";
-        $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>\n";
-        $Content .= "<td><a href='timeline/$L/index.html'>review</a></td>\n";
+        $Content .= "<tr>";
+        $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>";
+        $Content .= "<td><a href='timeline/$L/index.html'>review</a></td>";
         
         # my $M = $LibAttr{$L}{"Maintainer"};
         # if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
