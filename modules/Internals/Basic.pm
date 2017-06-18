@@ -19,6 +19,8 @@
 # If not, see <http://www.gnu.org/licenses/>.
 ##################################################################
 use strict;
+use Time::Local;
+use POSIX qw(strftime);
 use Fcntl;
 
 sub findFiles(@)
@@ -189,6 +191,49 @@ sub getMajor($$)
         return join(".", splice(@P, 0, $L));
     }
     return $V;
+}
+
+sub formatNum($)
+{
+    my $Num = $_[0];
+    
+    if($Num=~/\A(\d+\.\d\d)/) {
+        return $1;
+    }
+    
+    return $Num
+}
+
+sub fNum($)
+{
+    my $N = $_[0];
+    if(length($N)==1) {
+        return "0".$N;
+    }
+    return $N;
+}
+
+sub getDate()
+{
+    my ($D, $M, $Y) = (localtime)[3, 4, 5];
+    return (1900+$Y)."-".fNum($M+1)."-".fNum($D);
+}
+
+sub getRssDate($)
+{
+    my $Date = $_[0];
+    
+    my ($Year, $Mon, $Mday, $Hour, $Min) = split(/[\s\-:]+/, $Date);
+    return strftime('%a, %d %b %Y %T', 0, $Min, $Hour, $Mday, $Mon-1, $Year-1900)." ".strftime('%z', localtime);
+}
+
+sub getS($)
+{
+    if($_[0]>1) {
+        return "s";
+    }
+    
+    return "";
 }
 
 return 1;

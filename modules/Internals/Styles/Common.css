@@ -27,6 +27,22 @@ a.tool {
     color:Black;
 }
 
+div.sponsor, div.become_sponsor {
+    padding-left:85px;
+    font-size:1.7em;
+    font-weight:bold;
+    color:#ACACAC;
+}
+
+div.sponsor {
+    font-size:1.7em;
+}
+
+img.sponsor {
+    height:50px;
+    padding-left:5px;
+}
+
 .rss {
     height:1.2em;
     vertical-align:bottom;

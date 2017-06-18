@@ -32,6 +32,12 @@ EXAMPLES:
   abi-tracker -build libssh.json
   abi-tracker -rebuild -target abireport -v 0.7.0 libssh.json
 
+GRAPH:
+  abi-tracker -build -t graph libssh.json
+
+RSS:
+  abi-tracker -build -rss libssh.json
+
 CRON JOB:
   abi-monitor -get -build-new [profile]
   abi-tracker -build [profile]
@@ -41,6 +47,8 @@ PROFILE FORMAT:
 {
   "Name":        "SHORT LIBRARY NAME",
   "Maintainer":  "MAINTAINER NAME",
+  "SourceUrl":   "URL TO DOWNLOAD PACKAGES",
+  "Git":         "GIT ADDRESS TO CLONE",
   
   "Versions": [
   {
@@ -66,6 +74,8 @@ PROFILE EXAMPLE:
 {
   "Name":        "libssh",
   "Maintainer":  "Andrey P.",
+  "SourceUrl":   "https://red.libssh.org/projects/libssh/files",
+  "Git":         "https://git.libssh.org/projects/libssh.git",
   
   "Versions": [
   {
@@ -103,6 +113,8 @@ PROFILE EXAMPLE:
     "ABIDiff":     "Off"
   }]
 }
+
+See more profile examples in this directory: https://github.com/lvc/upstream-tracker/tree/master/profile
 
 ADV. OPTIONS:
 If you want to allow users to connect the maintainer of the tracker then you can set "MaintainerUrl" option.

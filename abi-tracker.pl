@@ -41,13 +41,13 @@ use File::Temp qw(tempdir);
 use File::Basename qw(dirname basename);
 use File::Copy qw(copy);
 use Time::Local;
-use POSIX qw(strftime);
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
 my $TOOL_VERSION = "1.10";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
+my $INSTALL_ROOT = "installed";
 
 # Internal modules
 my $MODULES_DIR = get_Modules();
@@ -119,10 +119,12 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
   "disable-cache!" => \$In::Opt{"DisableCache"},
   "deploy=s" => \$In::Opt{"Deploy"},
   "debug!" => \$In::Opt{"Debug"},
-# internal options
+# other options
   "json-report=s" => \$In::Opt{"JsonReport"},
   "regen-dump!" => \$In::Opt{"RegenDump"},
-  "rss!" => \$In::Opt{"GenRss"}
+  "rss!" => \$In::Opt{"GenRss"},
+# private options
+  "sponsors=s" => \$In::Opt{"Sponsors"}
 ) or ERR_MESSAGE();
 
 sub ERR_MESSAGE()
@@ -199,6 +201,17 @@ GENERAL OPTIONS:
   
   -debug
       Enable debug messages.
+
+OTHER OPTIONS:
+  -json-report DIR
+      Generate JSON-format report for a library to DIR.
+  
+  -regen-dump
+      Regenerate ABI dumps for previous versions if
+      comparing with new ones.
+  
+  -rss
+      Generate RSS feed.
 ";
 
 my $Profile;
@@ -206,11 +219,15 @@ my $DB;
 my $TARGET_LIB;
 my $DB_PATH = undef;
 
+# Sponsors
+my %LibrarySponsor;
+
 # Regenerate reports
 my $ObjectsReport = 0;
 
-# Errors
+# Dump status
 my %FailedDump = ();
+my %DoneDump = ();
 
 # Report style
 my $LinkClass = " class='num'";
@@ -298,21 +315,30 @@ sub readProfile($)
     if($Content=~/\A\s*\{\s*((.|\n)+?)\s*\}\s*\Z/)
     {
         my $Info = $1;
+        my $Pos = 0;
         
-        if($Info=~/\"Versions\"/)
+        if($Info=~/\"(Versions|Supports)\"/)
         {
-            my $Pos = 0;
+            my $Subj = $1;
+            $Pos = 0;
             
-            while($Info=~s/(\"Versions\"\s*:\s*\[\s*)(\{\s*(.|\n)+?\s*\})\s*,?\s*/$1/)
+            while($Info=~s/(\"$Subj\"\s*:\s*\[\s*)(\{\s*(.|\n)+?\s*\})\s*,?\s*/$1/)
             {
-                my $VInfo = readProfile($2);
-                if(my $VNum = $VInfo->{"Number"})
+                my $SInfo = readProfile($2);
+                
+                if($Subj eq "Versions")
                 {
-                    $VInfo->{"Pos"} = $Pos++;
-                    $Res{"Versions"}{$VNum} = $VInfo;
+                    if(my $Num = $SInfo->{"Number"})
+                    {
+                        $SInfo->{"Pos"} = $Pos++;
+                        $Res{$Subj}{$Num} = $SInfo;
+                    }
+                    else {
+                        printMsg("ERROR", "version number is missed in the profile");
+                    }
                 }
-                else {
-                    printMsg("ERROR", "version number is missed in the profile");
+                elsif($Subj eq "Supports") {
+                    $Res{$Subj}{$Pos++} = $SInfo;
                 }
             }
         }
@@ -322,7 +348,8 @@ sub readProfile($)
         {
             my ($K, $A) = ($1, $2);
             
-            if($K eq "Versions") {
+            if($K eq "Versions"
+            or $K eq "Supports") {
                 next;
             }
             
@@ -342,7 +369,8 @@ sub readProfile($)
         {
             my ($K, $V) = ($1, $2);
             
-            if($K eq "Versions") {
+            if($K eq "Versions"
+            or $K eq "Supports") {
                 next;
             }
             
@@ -578,6 +606,10 @@ sub buildData()
                 $O_V = $Versions[$P+1];
             }
             
+            if(not defined $O_V) {
+                next;
+            }
+            
             if(defined $DB->{"ABIReport"} and defined $DB->{"ABIReport"}{$O_V}
             and defined $DB->{"ABIReport"}{$O_V}{$V})
             {
@@ -756,13 +788,16 @@ sub simpleGraph($$$)
     
     writeFile($Data, $Content);
     
-    my $Title = ""; # Timeline of ABI changes
+    my $GraphTitle = ""; # Timeline of ABI changes
     
     my $GraphPath = "graph/$TARGET_LIB/graph.png";
     mkpath(getDirname($GraphPath));
     
-    my $Cmd = "gnuplot -e \"set title \'$Title\';";
-    $Cmd .= "set xlabel '".showTitle()." version';";
+    my $Title = showTitle();
+    $Title=~s/\'/''/g;
+    
+    my $Cmd = "gnuplot -e \"set title \'$GraphTitle\';";
+    $Cmd .= "set xlabel '".$Title." version';";
     $Cmd .= "set ylabel 'ABI symbols';";
     $Cmd .= "set xrange [0:".$#Vs."];";
     $Cmd .= "set yrange [$MinRange:$MaxRange];";
@@ -779,6 +814,42 @@ sub simpleGraph($$$)
     
     system($Cmd);
     unlink($Data);
+}
+
+sub getLdDirs($$)
+{
+    my ($V, $Opts) = @_;
+    my @Dirs = ();
+    
+    foreach my $C (@{$Opts})
+    {
+        while($C=~s&({INSTALL_ROOT}\/[^\/]+\/[^\/\s;:'"]+)&&)
+        {
+            my $Dir = addParams($1, $V);
+            
+            if(-d $Dir."/lib") {
+                push(@Dirs, $Dir."/lib");
+            }
+            
+            if(-d $Dir."/lib64") {
+                push(@Dirs, $Dir."/lib64");
+            }
+        }
+    }
+    
+    return @Dirs;
+}
+
+sub addParams($$)
+{
+    my ($Str, $V) = @_;
+    
+    $Str=~s/{VERSION}/$V/g;
+    
+    my $InstallRoot_A = $ORIG_DIR."/".$INSTALL_ROOT;
+    $Str=~s/{INSTALL_ROOT}/$InstallRoot_A/g;
+    
+    return $Str;
 }
 
 sub findObjects($)
@@ -1005,7 +1076,7 @@ sub getSover($)
       # libMagickCore-Q16.so.7
         $Pre = $1;
     }
-    elsif(not defined $Post and $Name=~/([\d\.])\.so(\.|\Z)/) {
+    elsif(not defined $Post and $Name=~/\.?([\d\.]+)\.so(\.|\Z)/) {
         $Pre = $1;
     }
     
@@ -1064,11 +1135,14 @@ sub createChangelog($$)
     my $V = $_[0];
     my $First = $_[1];
     
+    my $Dir = "changelog/$TARGET_LIB/$V";
+    
     if(defined $Profile->{"Versions"}{$V}{"Changelog"})
     {
         if($Profile->{"Versions"}{$V}{"Changelog"} eq "Off"
         or index($Profile->{"Versions"}{$V}{"Changelog"}, "://")!=-1)
         {
+            rmtree($Dir);
             return 0;
         }
     }
@@ -1094,7 +1168,7 @@ sub createChangelog($$)
         return 0;
     }
     
-    my $TmpDir = $TMP_DIR."/log/";
+    my $TmpDir = $TMP_DIR."/log";
     mkpath($TmpDir);
     
     if($V eq "current")
@@ -1110,6 +1184,10 @@ sub createChangelog($$)
         elsif(defined $Profile->{"Svn"})
         {
             $Cmd_L = "svn log -l100 >$ChangelogPath";
+        }
+        elsif(defined $Profile->{"Hg"})
+        {
+            $Cmd_L = "hg log --limit 100 >$ChangelogPath";
         }
         else
         {
@@ -1137,10 +1215,17 @@ sub createChangelog($$)
             return 0;
         }
         
-        my @Files = listDir($TmpDir);
-        
-        if($#Files==0) {
-            $TmpDir .= "/".$Files[0];
+        my $STmpDir = $TmpDir;
+        while(1)
+        {
+            my @Files = listDir($STmpDir);
+            if($#Files==0)
+            { # one step deeper
+                $STmpDir .= "/".$Files[0];
+            }
+            else {
+                last;
+            }
         }
         
         if(defined $Profile->{"Versions"}{$V}{"Changelog"})
@@ -1149,31 +1234,32 @@ sub createChangelog($$)
             
             if($Target eq "On")
             {
-                my $Found = findChangelog($TmpDir);
+                my $Found = findChangelog($STmpDir);
                 
                 if($Found and $Found ne "None") {
-                    $ChangelogPath = $TmpDir."/".$Found;
+                    $ChangelogPath = $STmpDir."/".$Found;
                 }
             }
             else
             { # name of the changelog
-                if(-f $TmpDir."/".$Target
-                and -s $TmpDir."/".$Target)
+                if(-f $STmpDir."/".$Target
+                and -s $STmpDir."/".$Target)
                 {
-                    $ChangelogPath = $TmpDir."/".$Target;
+                    $ChangelogPath = $STmpDir."/".$Target;
                 }
             }
         }
     }
     
-    my $Dir = "changelog/$TARGET_LIB/$V";
+    my $Html = undef;
     
-    if($ChangelogPath)
+    if($ChangelogPath) {
+        $Html = toHtml($V, $ChangelogPath, $First);
+    }
+    
+    if($Html)
     {
-        my $Html = toHtml($V, $ChangelogPath, $First);
-        
         writeFile($Dir."/log.html", $Html);
-        
         $DB->{"Changelog"}{$V} = $Dir."/log.html";
     }
     else
@@ -1190,10 +1276,21 @@ sub toHtml($$$)
     my ($V, $Path, $First) = @_;
     my $Content = readFile($Path);
     
+    if(not $Content) {
+        return undef;
+    }
+    
     my $LIM = 500000;
+    my $MIN = 15;
     
     if(not $First and $V ne "current") {
         $LIM /= 20;
+    }
+    
+    my $Len = length($Content);
+    
+    if($Len<$MIN) {
+        return undef;
     }
     
     if(length($Content)>$LIM)
@@ -1210,19 +1307,8 @@ sub toHtml($$$)
     
     $Content = "\n<div class='changelog'>\n<pre class='wrap'>$Content</pre></div>\n";
     
-    if($V eq "current")
-    {
-        my $Note = "source repository";
-        if(defined $Profile->{"Git"})
-        {
-            $Note = "Git";
-        }
-        elsif(defined $Profile->{"Svn"})
-        {
-            $Note = "Svn";
-        }
-        
-        $Content = "<h1>Changelog from $Note</h1><br/><br/>".$Content;
+    if($V eq "current") {
+        $Content = "<h1>Changelog from ".getScmInfo()."</h1><br/><br/>".$Content;
     }
     else {
         $Content = "<h1>Changelog for <span class='version'>$V</span> version</h1><br/><br/>".$Content;
@@ -1232,6 +1318,34 @@ sub toHtml($$$)
     $Content = composeHTML_Head("changelog", $Title, $Keywords, $Desc, "changelog.css")."\n<body>\n$Content\n</body>\n</html>\n";
     
     return $Content;
+}
+
+sub getScmName()
+{
+    my $Name = "source repository";
+    
+    if(defined $Profile->{"Git"}) {
+        $Name = "Git";
+    }
+    elsif(defined $Profile->{"Svn"}) {
+        $Name = "Svn";
+    }
+    elsif(defined $Profile->{"Hg"}) {
+        $Name = "Mercurial";
+    }
+    
+    return $Name;
+}
+
+sub getScmInfo()
+{
+    my $Name = getScmName();
+    
+    if(defined $Profile->{"Branch"}) {
+        $Name .= " (".$Profile->{"Branch"}.")";
+    }
+    
+    return $Name;
 }
 
 sub htmlSpecChars(@)
@@ -1264,11 +1378,14 @@ sub findChangelog($)
 {
     my $Dir = $_[0];
     
-    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "Changelog",
-    "RELEASE_NOTES.md", "CHANGELOG.md", "RELEASE_NOTES.markdown")
+    my $MIN_LOG = 250;
+    
+    foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "ChangeLog.md", "Changelog",
+    "changelog", "RELEASE_NOTES.md", "CHANGELOG.md", "CHANGELOG.txt", "RELEASE_NOTES.markdown", "NEWS.md",
+    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog")
     {
         if(-f $Dir."/".$Name
-        and -s $Dir."/".$Name)
+        and (-s $Dir."/".$Name > $MIN_LOG))
         {
             return $Name;
         }
@@ -1297,8 +1414,7 @@ sub getScmUpdateTime()
                 $Head = "$Source/.git/FETCH_HEAD";
             }
             
-            if(not -f $Head)
-            {
+            if(not -f $Head) {
                 $Head = undef;
             }
         }
@@ -1306,8 +1422,15 @@ sub getScmUpdateTime()
         {
             $Head = "$Source/.svn/wc.db";
             
-            if(not -f $Head)
-            {
+            if(not -f $Head) {
+                $Head = undef;
+            }
+        }
+        elsif(defined $Profile->{"Hg"})
+        {
+            $Head = "$Source/.hg/store";
+            
+            if(not -e $Head) {
                 $Head = undef;
             }
         }
@@ -1380,6 +1503,17 @@ sub detectDate($)
             chdir($ORIG_DIR);
             
             if($Log=~/ (\d+\-\d+\-\d+ \d+:\d+:\d+) /)
+            {
+                $Date = $1;
+            }
+        }
+        elsif(defined $Profile->{"Hg"})
+        {
+            chdir($Source);
+            my $Log = `hg log --limit 1 --template 'date: {date|isodate}'`;
+            chdir($ORIG_DIR);
+            
+            if($Log=~/ (\d+\-\d+\-\d+ \d+:\d+) /)
             {
                 $Date = $1;
             }
@@ -1564,6 +1698,30 @@ sub createABIDump($)
             $Cmd .= " -debug";
         }
         
+        if($Profile->{"LambdaSupport"}) {
+            $Cmd .= " -lambda";
+        }
+        
+        my @ConfKeys = ("Configure", "CMakeConfigure", "AutotoolsConfigure");
+        if($V eq "current") {
+            @ConfKeys = ("CurrentConfigure", @ConfKeys)
+        }
+        
+        my @Conf = ();
+        foreach my $C (@ConfKeys)
+        {
+            if(defined $Profile->{$C}) {
+                push(@Conf, $Profile->{$C});
+            }
+        }
+        
+        if(@Conf)
+        {
+            if(my @LdDirs = getLdDirs($V, \@Conf)) {
+                $Cmd .= " -ld-library-path \"".join(":", @LdDirs)."\"";
+            }
+        }
+        
         if($In::Opt{"Debug"}) {
             printMsg("DEBUG", "executing $Cmd");
         }
@@ -1604,6 +1762,8 @@ sub createABIDump($)
     if(-d $TmpDir) {
         rmtree($TmpDir);
     }
+    
+    $DoneDump{$V} = 1;
 }
 
 sub getObjectName($$)
@@ -1634,6 +1794,13 @@ sub getObjectName($$)
     }
     
     return undef;
+}
+
+sub dropPrefix($)
+{
+    my $Path = $_[0];
+    $Path=~s/\A(usr\/|)(lib\/|lib64\/|lib32\/|)(src\/|)//;
+    return $Path;
 }
 
 sub createABIView($)
@@ -1716,8 +1883,7 @@ sub createABIView($)
             next;
         }
         
-        my $Name = $Object;
-        $Name=~s/\A(usr\/|)lib(64|32|)\///;
+        my $Name = dropPrefix($Object);
         
         $Report .= "<tr>\n";
         $Report .= "<td class='object'>$Name</td>\n";
@@ -1848,7 +2014,9 @@ sub createABIReport($$)
         }
     }
     
-    if(defined $In::Opt{"RegenDump"})
+    if(defined $In::Opt{"RegenDump"}
+    and $Profile->{"RegenDump"} ne "Off"
+    and not defined $DoneDump{$V1})
     {
         print "INFO: Regenerating ABI dump for $V1\n";
         delete($DB->{"ABIDump"}{$V1});
@@ -2023,7 +2191,7 @@ sub createABIReport($$)
         }
     }
     
-    my @Objects = sort keys(%Mapped);
+    my @Objects = sort {lc($a) cmp lc($b)} keys(%Mapped);
     
     # Detect changed SONAME
     foreach my $Object1 (@Objects)
@@ -2133,8 +2301,7 @@ sub createABIReport($$)
     
     foreach my $Object2 (@Objects2)
     {
-        my $Name = $Object2;
-        $Name=~s/\A(usr\/|)lib(64|32|)\///;
+        my $Name = dropPrefix($Object2);
         
         if(defined $Added{$Object2})
         {
@@ -2158,7 +2325,7 @@ sub createABIReport($$)
             $Name=~s/\A.*\///g;
         }
         else {
-            $Name=~s/\A(usr\/|)lib(64|32|)\///;
+            $Name = dropPrefix($Name);
         }
         
         if($Mapped{$Object1})
@@ -2392,8 +2559,11 @@ sub createABIReport($$)
     if($TotalFuncs) {
         $BC -= $Affected_T/$TotalFuncs;
     }
-    if(my $Rm = keys(%Removed) and $#Objects1>=0) {
-        $BC *= (1-$RemovedByObjects_T/($TotalFuncs+$RemovedByObjects_T));
+    if(my $Rm = keys(%Removed) and $#Objects1>=0)
+    {
+        if(my $T = $TotalFuncs + $RemovedByObjects_T) {
+            $BC *= (1 - $RemovedByObjects_T/$T);
+        }
     }
     $BC = formatNum($BC);
     
@@ -2405,8 +2575,11 @@ sub createABIReport($$)
         if($TotalFuncs) {
             $BC_Source -= $Affected_T_Source/$TotalFuncs;
         }
-        if(my $Rm = keys(%Removed) and $#Objects1>=0) {
-            $BC_Source *= (1-$RemovedByObjects_T/($TotalFuncs+$RemovedByObjects_T));
+        if(my $Rm = keys(%Removed) and $#Objects1>=0)
+        {
+            if(my $T = $TotalFuncs + $RemovedByObjects_T) {
+                $BC_Source *= (1 - $RemovedByObjects_T/$T);
+            }
         }
         $BC_Source = formatNum($BC_Source);
     }
@@ -2452,17 +2625,6 @@ sub createABIReport($$)
     push(@Meta, "\"TotalObjects\": ".($#Objects1 + 1));
     
     writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
-}
-
-sub formatNum($)
-{
-    my $Num = $_[0];
-    
-    if($Num=~/\A(\d+\.\d\d)/) {
-        return $1;
-    }
-    
-    return $Num
 }
 
 sub getMd5(@)
@@ -3124,23 +3286,6 @@ sub getSign($)
     return $Sign;
 }
 
-sub getS($)
-{
-    if($_[0]>1) {
-        return "s";
-    }
-    
-    return "";
-}
-
-sub getRssDate($)
-{
-    my $Date = $_[0];
-    
-    my ($Year, $Mon, $Mday, $Hour, $Min) = split(/[\s\-:]+/, $Date);
-    return strftime('%a, %d %b %Y %T', 0, $Min, $Hour, $Mday, $Mon-1, $Year-1900)." ".strftime('%z', localtime);
-}
-
 sub getVersionsList()
 {
     my @Versions = keys(%{$Profile->{"Versions"}});
@@ -3175,6 +3320,11 @@ sub writeCss()
     writeFile("css/changelog.css", readModule("Styles", "Changelog.css"));
 }
 
+sub writeJs()
+{
+    writeFile("js/index.js", readModule("Js", "Index.js"));
+}
+
 sub writeImages()
 {
     my $ImgDir = $MODULES_DIR."/Internals/Images";
@@ -3191,6 +3341,7 @@ sub createTimeline()
     $DB->{"Updated"} = time;
     
     writeCss();
+    writeJs();
     writeImages();
     
     my $Title = showTitle().": API/ABI changes review";
@@ -3204,7 +3355,9 @@ sub createTimeline()
     
     my @Versions = getVersionsList();
     
-    if(not @Versions) {
+    if(not @Versions or $#Versions<1)
+    {
+        printMsg("INFO", "No index created");
         return;
     }
     
@@ -3300,8 +3453,12 @@ sub createTimeline()
     $Content .= "<br/>";
     
     my $GraphPath = "graph/$TARGET_LIB/graph.png";
+    my $ShowGraph = (-f $GraphPath);
+    my $ShowSponsor = (defined $In::Opt{"Sponsors"});
     
-    if(-f $GraphPath) {
+    my $RightSide = ($ShowGraph or $ShowSponsor);
+    
+    if($RightSide) {
         $Content .= "<table cellpadding='0' cellspacing='0'><tr><td valign='top'>\n";
     }
     
@@ -3418,9 +3575,37 @@ sub createTimeline()
             $Anchor = "v".$Anchor;
         }
         
+        my $VTitle = getFilename($Profile->{"Versions"}{$V}{"Source"});
+        my $VShow = $V;
+        
+        if($V eq "current")
+        {
+            $VTitle = "current in ".getScmInfo();
+            
+            if(my $Br = $Profile->{"Branch"})
+            {
+                $VShow = getScmName();
+                
+                if(length($Br)>10) {
+                    $Br = substr($Br, 0, 7)." ...";
+                }
+                
+                $VShow .= "<br/>(".$Br.")";
+            }
+            else
+            {
+                if(defined $Profile->{"Git"} or defined $Profile->{"Hg"}) {
+                    $VShow = "master";
+                }
+                elsif(defined $Profile->{"Svn"}) {
+                    $VShow = "trunk";
+                }
+            }
+        }
+        
         $Content .= "<tr id='".$Anchor."'>";
         
-        $Content .= "<td title='".getFilename($Profile->{"Versions"}{$V}{"Source"})."'>".$V."</td>\n";
+        $Content .= "<td title='".$VTitle."'>$VShow</td>\n";
         $Content .= "<td>".showDate($V, $Date)."</td>\n";
         
         if($Soname ne "Off") {
@@ -3740,11 +3925,70 @@ sub createTimeline()
     $Content .= "<br/>\n";
     $Content .= "Generated by <a href='https://github.com/lvc/abi-tracker'>ABI Tracker</a>, <a href='https://github.com/lvc/abi-compliance-checker'>ABICC</a> and <a href='https://github.com/lvc/abi-dumper'>ABI Dumper</a> tools.\n";
     
-    if(-f $GraphPath)
+    if($RightSide)
     {
         $Content .= "</td>\n";
-        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:4em;'>\n";
-        $Content .= "<img src=\'../../$GraphPath\' alt='Timeline of ABI changes' />\n";
+        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:2.5em;'>\n";
+        
+        if($ShowSponsor)
+        {
+            if(not defined $LibrarySponsor{$TARGET_LIB})
+            {
+                $Content .= "<div class='become_sponsor'>\n";
+                $Content .= "Become a <a href='https://abi-laboratory.pro/index.php?view=sponsor'>sponsor</a><br/>of this report";
+                $Content .= "</div>\n";
+            }
+            
+            $Content .= "<br/>\n";
+        }
+        
+        if($ShowGraph)
+        {
+            $Content .= "<img src=\'../../$GraphPath\' alt='Timeline of ABI changes' />\n";
+            $Content .= "<br/>\n";
+            $Content .= "<br/>\n";
+            $Content .= "<br/>\n";
+            $Content .= "<p/>\n";
+        }
+        
+        if($ShowSponsor)
+        {
+            my %Weight = (
+                "Bronze"  => 1,
+                "Silver"  => 2,
+                "Gold"    => 3,
+                "Diamond" => 4
+            );
+            if(defined $LibrarySponsor{$TARGET_LIB})
+            {
+                my $Sponsors = $LibrarySponsor{$TARGET_LIB};
+                
+                $Content .= "<div class='sponsor'>\n";
+                $Content .= "This report is<br/>supported by<p/>\n";
+                
+                foreach my $SName (sort {$Weight{$Sponsors->{$b}{"Status"}}<=>$Weight{$Sponsors->{$a}{"Status"}}} sort keys(%{$Sponsors}))
+                {
+                    my $Sponsor = $Sponsors->{$SName};
+                    my $Logo = $Sponsor->{"Logo"};
+                    
+                    $Content .= "<a href='".$Sponsor->{"Url"}."'>";
+                    
+                    if($Logo and -f $Logo) {
+                        $Content .= "<img src=\'../../$Logo\' alt='".$SName."' class='sponsor' />";
+                    }
+                    else {
+                        $Content .= $SName;
+                    }
+                    
+                    $Content .= "</a>\n";
+                    $Content .= "<p/>\n";
+                }
+                $Content .= "</div>\n";
+            }
+            
+            $Content .= "<br/>\n";
+        }
+        
         $Content .= "</td>\n";
         $Content .=  "</tr>\n";
         $Content .= "</table>\n";
@@ -3909,22 +4153,50 @@ sub createGlobalIndex()
     }
     
     writeCss();
+    writeJs();
     writeImages();
     
     my $Title = "ABI Tracker: Maintained libraries";
     my $Desc = "List of maintained libraries";
-    my $Content = composeHTML_Head("global_index", $Title, "", $Desc, "report.css");
-    $Content .= "<body>\n";
+    my $Content = composeHTML_Head("global_index", $Title, "", $Desc, "report.css", "index.js");
+    $Content .= "<body onload=\"applyFilter(document.getElementById('Filter'), 'List', 'Header', 'Note')\">\n";
     
     $Content .= getHead("global_index");
     
     $Content .= "<h1>Maintained libraries (".($#Libs+1).")</h1>\n";
     $Content .= "<br/>\n";
-    $Content .= "<br/>\n";
     
-    $Content .= "<table cellpadding='3' class='summary'>\n";
+    if($#Libs>=10)
+    {
+        my $E = "applyFilter(this, 'List', 'Header', 'Note')";
+        
+        $Content .= "<table cellpadding='0' cellspacing='0'>";
+        $Content .= "<tr>\n";
+        
+        $Content .= "<td>\n";
+        $Content .= "Filter:&nbsp;";
+        $Content .= "</td>\n";
+        
+        $Content .= "<td valign='bottom'>\n";
+        
+        $Content .= "<textarea id='Filter' autofocus='autofocus' rows='1' cols='20' style='border:solid 1px black' name='search' onkeydown='if(event.keyCode == 13) {return false;}' onkeyup=\"$E\"></textarea>\n";
+        $Content .= "</td>\n";
+        
+        $Content .= "</tr>\n";
+        $Content .= "</table>\n";
+        
+        $Content .= "<div id='Note' style='display:none;visibility:hidden;'>\n";
+        $Content .= "<p/>\n";
+        $Content .= "<br/>\n";
+        $Content .= "No info (<a href=\'$HomePage/?view=abi-tracker\'>add</a> a library)\n";
+        $Content .= "</div>\n";
+    }
     
-    $Content .= "<tr>\n";
+    $Content .= "<p/>\n";
+    
+    $Content .= "<table id='List' cellpadding='3' class='summary highlight list'>\n";
+    
+    $Content .= "<tr id='Header'>\n";
     $Content .= "<th>Name</th>\n";
     $Content .= "<th>ABI Changes<br/>Review</th>\n";
     # $Content .= "<th>Maintainer</th>\n";
@@ -3956,7 +4228,7 @@ sub createGlobalIndex()
     foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
     {
         $Content .= "<tr>";
-        $Content .= "<td class='sl'>".$LibAttr{$L}{"Title"}."</td>";
+        $Content .= "<td>".$LibAttr{$L}{"Title"}."</td>";
         $Content .= "<td><a href='timeline/$L/index.html'>review</a></td>";
         
         # my $M = $LibAttr{$L}{"Maintainer"};
@@ -3990,7 +4262,7 @@ sub showDate($$)
     
     if($V eq "current")
     {
-        $T=~s/\:\d+\Z//;
+        $T=~s/(\d+\:\d+)\:\d+/$1/;
         return $D."<br/>".$T;
     }
     
@@ -4460,6 +4732,36 @@ sub scenario()
         
         $TARGET_LIB = $Profile->{"Name"};
         $DB_PATH = "db/".$TARGET_LIB."/".$DB_NAME;
+        
+        if(my $SponsorsFile = $In::Opt{"Sponsors"})
+        {
+            if(not -f $SponsorsFile) {
+                exitStatus("Access_Error", "can't access \'$SponsorsFile\'");
+            }
+            
+            my $Supports = readProfile(readFile($SponsorsFile));
+            my $CurDate = getDate();
+            
+            foreach my $N (sort {$a<=>$b} keys(%{$Supports->{"Supports"}}))
+            {
+                my $Support = $Supports->{"Supports"}{$N};
+                my $Till = delete($Support->{"Till"});
+                
+                if(($Till cmp $CurDate) == -1) {
+                    next;
+                }
+                
+                my $Libs = delete($Support->{"Libraries"});
+                
+                foreach my $L (@{$Libs})
+                {
+                    if($L eq "*") {
+                        $L = $TARGET_LIB;
+                    }
+                    $LibrarySponsor{$L}{$Support->{"Name"}} = $Support;
+                }
+            }
+        }
         
         $In::Opt{"TargetLib"} = $TARGET_LIB;
         $In::Opt{"DBPath"} = $DB_PATH;
