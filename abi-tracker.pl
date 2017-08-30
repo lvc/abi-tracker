@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 ##################################################################
-# ABI Tracker 1.10
+# ABI Tracker 1.11
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
 # Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
@@ -15,9 +15,9 @@
 # ============
 #  Perl 5
 #  Elfutils (eu-readelf)
-#  ABI Dumper (0.99.16 or newer)
+#  ABI Dumper (1.1 or newer)
 #  Vtable-Dumper (1.1 or newer)
-#  ABI Compliance Checker (1.99.21 or newer)
+#  ABI Compliance Checker (2.2 or newer)
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
@@ -40,11 +40,10 @@ use File::Path qw(mkpath rmtree);
 use File::Temp qw(tempdir);
 use File::Basename qw(dirname basename);
 use File::Copy qw(copy);
-use Time::Local;
 use Cwd qw(abs_path cwd);
 use Data::Dumper;
 
-my $TOOL_VERSION = "1.10";
+my $TOOL_VERSION = "1.11";
 my $DB_NAME = "Tracker.data";
 my $TMP_DIR = tempdir(CLEANUP=>1);
 my $INSTALL_ROOT = "installed";
@@ -60,11 +59,11 @@ loadModule("Input");
 loadModule("Utils");
 
 my $ABI_DUMPER = "abi-dumper";
-my $ABI_DUMPER_VERSION = "0.99.16";
+my $ABI_DUMPER_VERSION = "1.1";
 my $ABI_DUMPER_EE = 0;
 
 my $ABI_CC = "abi-compliance-checker";
-my $ABI_CC_VERSION = "1.99.21";
+my $ABI_CC_VERSION = "2.2";
 
 my $RFCDIFF = "rfcdiff";
 my $PKGDIFF = "pkgdiff";
@@ -115,6 +114,8 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
   "v=s" => \$In::Opt{"TargetVersion"},
   "t|target=s" => \$In::Opt{"TargetElement"},
   "clear!" => \$In::Opt{"Clear"},
+  "clean-unused!" => \$In::Opt{"CleanUnused"},
+  "force!" => \$In::Opt{"Force"},
   "global-index!" => \$In::Opt{"GlobalIndex"},
   "disable-cache!" => \$In::Opt{"DisableCache"},
   "deploy=s" => \$In::Opt{"Deploy"},
@@ -233,6 +234,9 @@ my %DoneDump = ();
 my $LinkClass = " class='num'";
 my $LinkNew = " new";
 my $LinkRemoved = " removed";
+
+# Dumps
+my $COMPRESS = "tar.gz";
 
 sub get_Modules()
 {
@@ -429,6 +433,63 @@ sub skipVersion($)
     return 0;
 }
 
+sub cleanUnused()
+{
+    printMsg("INFO", "Cleaning unused data");
+    my @Versions = getVersionsList();
+    
+    my %SeqVer = ();
+    my %PoinVer = ();
+    
+    foreach my $K (0 .. $#Versions)
+    {
+        my $V1 = $Versions[$K];
+        my $V2 = undef;
+        
+        if($K<$#Versions) {
+            $V2 = $Versions[$K+1];
+        }
+        
+        $PoinVer{$V1} = 1;
+        
+        if(defined $V2) {
+            $SeqVer{$V2}{$V1} = 1;
+        }
+    }
+    
+    foreach my $V (keys(%{$DB->{"ABIDump"}}))
+    {
+        if(not defined $PoinVer{$V})
+        {
+            printMsg("INFO", "Unused ABI dump v.$V");
+            
+            if(defined $In::Opt{"Force"}) {
+                rmtree("abi_dump/$TARGET_LIB/$V");
+            }
+        }
+    }
+    
+    foreach my $O_V (keys(%{$DB->{"ABIReport"}}))
+    {
+        foreach my $V (keys(%{$DB->{"ABIReport"}{$O_V}}))
+        {
+            if(not defined $SeqVer{$O_V}{$V})
+            {
+                printMsg("INFO", "Unused ABI report from $O_V to $V");
+                if(defined $In::Opt{"Force"})
+                {
+                    rmtree("objects_report/$TARGET_LIB/$O_V/$V");
+                    rmtree("compat_report/$TARGET_LIB/$O_V/$V");
+                }
+            }
+        }
+    }
+    
+    if(not defined $In::Opt{"Force"}) {
+        printMsg("INFO", "Use -force option to remove unused data");
+    }
+}
+
 sub buildData()
 {
     my @Versions = getVersionsList();
@@ -501,6 +562,18 @@ sub buildData()
             }
             
             createABIDump($V);
+        }
+    }
+    
+    if(checkTarget("compress"))
+    {
+        foreach my $V (@Versions)
+        {
+            if(skipVersion_T($V)) {
+                next;
+            }
+            
+            compressABIDump($V);
         }
     }
     
@@ -666,6 +739,11 @@ sub countSymbolsF($$)
         print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
         $Dump->{"TotalSymbols"} = countSymbols($Dump);
     }
+    elsif(defined $In::Opt{"DisableCache"})
+    { # re-count
+        print STDERR "WARNING: re-counting symbols in ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
+        $Dump->{"TotalSymbols"} = countSymbols($Dump);
+    }
     elsif(not defined $Dump->{"Version"}
     or cmpVersions_S($Dump->{"Version"}, "1.7")<0)
     { # TotalSymbols is fixed in 1.7
@@ -714,6 +792,8 @@ sub simpleGraph($$$)
     my $Content = "";
     my $Val_Pre = $StartVal;
     
+    my $Few = (defined $Profile->{"GraphFewXTics"} and $Profile->{"GraphFewXTics"} eq "On");
+    
     foreach (0 .. $#Vs)
     {
         my $V = $Vs[$_];
@@ -734,8 +814,6 @@ sub simpleGraph($$$)
         elsif($Val>$MaxRange) {
             $MaxRange = $Val;
         }
-        
-        my $Few = (defined $Profile->{"GraphFewXTics"} and $Profile->{"GraphFewXTics"} eq "On");
         
         my $V_S = $V;
         
@@ -775,13 +853,15 @@ sub simpleGraph($$$)
     
     my $Delta = $MaxRange - $MinRange;
     
-    $MinRange -= int($Delta*5/100);
-    $MaxRange += int($Delta*5/100);
-    
-    if($MaxRange-$MinRange<20)
+    if($Delta<20)
     {
         $MinRange -= 5;
         $MaxRange += 5;
+    }
+    else
+    {
+        $MinRange -= int($Delta/20);
+        $MaxRange += int($Delta/20);
     }
     
     my $Data = $TMP_DIR."/graph.data";
@@ -790,7 +870,7 @@ sub simpleGraph($$$)
     
     my $GraphTitle = ""; # Timeline of ABI changes
     
-    my $GraphPath = "graph/$TARGET_LIB/graph.png";
+    my $GraphPath = "graph/$TARGET_LIB/graph.svg";
     mkpath(getDirname($GraphPath));
     
     my $Title = showTitle();
@@ -801,7 +881,7 @@ sub simpleGraph($$$)
     $Cmd .= "set ylabel 'ABI symbols';";
     $Cmd .= "set xrange [0:".$#Vs."];";
     $Cmd .= "set yrange [$MinRange:$MaxRange];";
-    $Cmd .= "set terminal png size 400,300;";
+    $Cmd .= "set terminal svg size 380,300;";
     $Cmd .= "set output \'$GraphPath\';";
     $Cmd .= "set nokey;";
     $Cmd .= "set xtics font 'Times, 12';";
@@ -1382,7 +1462,8 @@ sub findChangelog($)
     
     foreach my $Name ("NEWS", "CHANGES", "CHANGES.txt", "RELEASE_NOTES", "ChangeLog", "ChangeLog.md", "Changelog",
     "changelog", "RELEASE_NOTES.md", "CHANGELOG.md", "CHANGELOG.txt", "RELEASE_NOTES.markdown", "NEWS.md",
-    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog")
+    "CHANGES.md", "changes.txt", "changes", "CHANGELOG", "RELEASE-NOTES", "WHATSNEW", "CHANGE_LOG", "doc/ChangeLog",
+    "ChangeLog.txt")
     {
         if(-f $Dir."/".$Name
         and (-s $Dir."/".$Name > $MIN_LOG))
@@ -1583,6 +1664,46 @@ sub listPackage($)
     return ();
 }
 
+sub readDump($)
+{
+    my $Path = abs_path($_[0]);
+    
+    if($Path!~/\.\Q$COMPRESS\E\Z/) {
+        return readFile($Path);
+    }
+    
+    my $Cmd_E = "tar -xOf \"$Path\"";
+    my $Content = qx/$Cmd_E/;
+    return $Content;
+}
+
+sub compressABIDump($)
+{
+    my $V = $_[0];
+    
+    foreach my $Md5 (keys(%{$DB->{"ABIDump"}{$V}}))
+    {
+        my $DumpPath = $DB->{"ABIDump"}{$V}{$Md5}{"Path"};
+        
+        if($DumpPath=~/\.\Q$COMPRESS\E\Z/) {
+            next;
+        }
+        
+        printMsg("INFO", "Compressing $DumpPath");
+        my $Dir = getDirname($DumpPath);
+        my $Name = getFilename($DumpPath);
+        my @Cmd_C = ("tar", "-C", $Dir, "-czf", $DumpPath.".".$COMPRESS, $Name);
+        system(@Cmd_C);
+        
+        if($?) {
+            exitStatus("Error", "Can't compress ABI dump");
+        }
+        else {
+            unlink($DumpPath);
+        }
+    }
+}
+
 sub createABIDump($)
 {
     my $V = $_[0];
@@ -1638,6 +1759,10 @@ sub createABIDump($)
         
         my $ABIDir = $Dir."/".$Md5;
         my $ABIDump = $ABIDir."/ABI.dump";
+        
+        if(not $Profile->{"NoCompress"}) {
+            $ABIDump .= ".".$COMPRESS;
+        }
         
         my $Cmd = $ABI_DUMPER." \"".$Object."\" -output \"".$ABIDump."\" -lver \"$V\"";
         
@@ -1733,7 +1858,7 @@ sub createABIDump($)
             $DB->{"ABIDump"}{$V}{$Md5}{"Path"} = $ABIDump;
             $DB->{"ABIDump"}{$V}{$Md5}{"Object"} = $RPath;
             
-            my $ABI = eval(readFile($ABIDump));
+            my $ABI = eval(readDump($ABIDump));
             $DB->{"ABIDump"}{$V}{$Md5}{"Lang"} = $ABI->{"Language"};
             
             my $TotalSymbols = countSymbols($DB->{"ABIDump"}{$V}{$Md5});
@@ -3351,7 +3476,7 @@ sub createTimeline()
     $Content .= "<body>\n";
     
     my @Rss = ();
-    my $RssLink = "$HomePage/tracker/timeline/$TARGET_LIB";
+    my $RssLink = $HomePage."tracker/timeline/$TARGET_LIB";
     
     my @Versions = getVersionsList();
     
@@ -3452,7 +3577,7 @@ sub createTimeline()
     $Content .= "<br/>";
     $Content .= "<br/>";
     
-    my $GraphPath = "graph/$TARGET_LIB/graph.png";
+    my $GraphPath = "graph/$TARGET_LIB/graph.svg";
     my $ShowGraph = (-f $GraphPath);
     my $ShowSponsor = (defined $In::Opt{"Sponsors"});
     
@@ -3928,7 +4053,7 @@ sub createTimeline()
     if($RightSide)
     {
         $Content .= "</td>\n";
-        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:2.5em;'>\n";
+        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:2em;'>\n";
         
         if($ShowSponsor)
         {
@@ -4188,7 +4313,7 @@ sub createGlobalIndex()
         $Content .= "<div id='Note' style='display:none;visibility:hidden;'>\n";
         $Content .= "<p/>\n";
         $Content .= "<br/>\n";
-        $Content .= "No info (<a href=\'$HomePage/?view=abi-tracker\'>add</a> a library)\n";
+        $Content .= "No info (<a href=\'$HomePage?view=abi-tracker\'>add</a> a library)\n";
         $Content .= "</div>\n";
     }
     
@@ -4347,6 +4472,10 @@ sub checkFiles()
                 my $Dir = $Dumps."/".$V."/".$Md5;
                 
                 $Info{"Path"} = $Dir."/ABI.dump";
+                
+                if(-e $Info{"Path"}.".".$COMPRESS) {
+                    $Info{"Path"} .= ".".$COMPRESS;
+                }
                 
                 my $Meta = readProfile(readFile($Dir."/meta.json"));
                 $Info{"Object"} = $Meta->{"Object"};
@@ -4631,7 +4760,7 @@ sub scenario()
     
     if($In::Opt{"TargetElement"})
     {
-        if($In::Opt{"TargetElement"}!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport)\Z/)
+        if($In::Opt{"TargetElement"}!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport|compress)\Z/)
         {
             exitStatus("Error", "the value of -target option should be one of the following: date, soname, changelog, abidump, abireport, rfcdiff, pkgdiff.");
         }
@@ -4787,6 +4916,10 @@ sub scenario()
         
         checkDB();
         checkFiles();
+        
+        if($In::Opt{"CleanUnused"}) {
+            cleanUnused();
+        }
         
         if($In::Opt{"Build"})
         {

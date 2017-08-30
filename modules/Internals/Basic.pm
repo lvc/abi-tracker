@@ -19,7 +19,6 @@
 # If not, see <http://www.gnu.org/licenses/>.
 ##################################################################
 use strict;
-use Time::Local;
 use POSIX qw(strftime);
 use Fcntl;
 
