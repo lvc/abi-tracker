@@ -924,10 +924,10 @@ sub addParams($$)
 {
     my ($Str, $V) = @_;
     
-    $Str=~s/{VERSION}/$V/g;
+    $Str=~s/\{VERSION\}/$V/g;
     
     my $InstallRoot_A = $ORIG_DIR."/".$INSTALL_ROOT;
-    $Str=~s/{INSTALL_ROOT}/$InstallRoot_A/g;
+    $Str=~s/\{INSTALL_ROOT\}/$InstallRoot_A/g;
     
     return $Str;
 }
@@ -1775,9 +1775,12 @@ sub createABIDump($)
             else
             {
                 $Cmd .= " -public-headers \"$Installed\"";
+                if($#Objects>0) {
+                    $Cmd .= " -cache-headers \"$TmpDir\"";
+                }
                 if($Profile->{"UseTUDump"})
                 {
-                    $Cmd .= " -use-tu-dump -cache-headers \"$TmpDir\"";
+                    $Cmd .= " -use-tu-dump";
                     
                     if(my $IncDefines = $Profile->{"IncludeDefines"}) {
                         $Cmd .= " -include-defines \"$IncDefines\"";
@@ -2145,6 +2148,14 @@ sub createABIReport($$)
     {
         print "INFO: Regenerating ABI dump for $V1\n";
         delete($DB->{"ABIDump"}{$V1});
+    }
+    
+    if(defined $In::Opt{"RegenDump"}
+    and $Profile->{"RegenDump"} ne "Off"
+    and not defined $DoneDump{$V2})
+    {
+        print "INFO: Regenerating ABI dump for $V2\n";
+        delete($DB->{"ABIDump"}{$V2});
     }
     
     if(not defined $DB->{"ABIDump"}{$V1}) {
