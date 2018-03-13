@@ -3,7 +3,7 @@
 # ABI Tracker 1.11
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
-# Copyright (C) 2015-2017 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2018 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -21,18 +21,20 @@
 #  PkgDiff (1.6.4 or newer)
 #  RfcDiff 1.41
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License or the GNU Lesser
-# General Public License as published by the Free Software Foundation.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
 #
-# This program is distributed in the hope that it will be useful,
+# This library is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License
-# and the GNU Lesser General Public License along with this program.
-# If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+# MA  02110-1301 USA
 ##################################################################
 use Getopt::Long;
 Getopt::Long::Configure ("posix_default", "no_ignore_case", "permute");
@@ -91,8 +93,8 @@ my $HomePage = "https://abi-laboratory.pro/";
 
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
-Copyright (C) 2017 Andrey Ponomarenko's ABI Laboratory
-License: GPLv2.0+ or LGPLv2.1+
+Copyright (C) 2018 Andrey Ponomarenko's ABI Laboratory
+License: GNU LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
 Example:
@@ -149,7 +151,7 @@ DESCRIPTION:
   newer library versions.
 
   This tool is free software: you can redistribute it and/or
-  modify it under the terms of the GPLv2.0+ or LGPLv2.1+.
+  modify it under the terms of the GNU LGPLv2.1+.
 
 USAGE:
   $CmdName [options] [profile]
@@ -783,6 +785,10 @@ sub simpleGraph($$$)
         pop(@Vs);
     }
     
+    if($#Vs<1) {
+        return;
+    }
+    
     my $MinVer = $Vs[0];
     my $MaxVer = $Vs[$#Vs];
     
@@ -855,12 +861,19 @@ sub simpleGraph($$$)
     
     if($Delta<20)
     {
-        $MinRange -= 5;
+        if($MinRange>5) {
+            $MinRange -= 5;
+        }
+        elsif($MinRange>0) {
+            $MinRange -= 1;
+        }
         $MaxRange += 5;
     }
     else
     {
-        $MinRange -= int($Delta/20);
+        if($MinRange>int($Delta/20)) {
+            $MinRange -= int($Delta/20);
+        }
         $MaxRange += int($Delta/20);
     }
     
@@ -1913,6 +1926,10 @@ sub getObjectName($$)
             return $1;
         }
         elsif($Name=~/\A(.+?)\-([a-zA-Z]?\d[\w\.\-]*)\.so(\.|\Z)/) {
+            return $1;
+        }
+        elsif($Name=~/\A(.+?)_d\.so(\.|\Z)/)
+        { # libOgreOverlay_d.so.1.9.0
             return $1;
         }
         elsif($Name=~/\A(.+?)[\d\.\-\_]*\.so(\.|\Z)/)
@@ -4344,14 +4361,23 @@ sub createGlobalIndex()
         my $Title = $L;
         # my ($M, $MUrl);
         
-        my $DB_P = "db/$L/$DB_NAME";
-        
-        if(-f $DB_P)
+        if(-f "profile/$L.json")
         {
-            my $DB = eval(readFile($DB_P));
-            
-            if(defined $DB->{"Title"}) {
-                $Title = $DB->{"Title"};
+            my $Pr = readProfile(readFile("profile/$L.json"));
+            if(defined $Pr->{"Title"}) {
+                $Title = $Pr->{"Title"};
+            }
+        }
+        else
+        {
+            my $DB_P = "db/$L/$DB_NAME";
+            if(-f $DB_P)
+            {
+                my $DB = eval(readFile($DB_P));
+                
+                if(defined $DB->{"Title"}) {
+                    $Title = $DB->{"Title"};
+                }
             }
         }
         
@@ -4363,9 +4389,10 @@ sub createGlobalIndex()
     
     foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
     {
-        $Content .= "<tr>";
-        $Content .= "<td>".$LibAttr{$L}{"Title"}."</td>";
-        $Content .= "<td><a href='timeline/$L/index.html'>review</a></td>";
+        my $LUrl = "timeline/$L/index.html";
+        $Content .= "<tr onclick=\"document.location=\'$LUrl\'\">\n";
+        $Content .= "<td>".$LibAttr{$L}{"Title"}."</td>\n";
+        $Content .= "<td><a href=\'$LUrl\'>review</a></td>\n";
         
         # my $M = $LibAttr{$L}{"Maintainer"};
         # if(my $MUrl = $LibAttr{$L}{"MaintainerUrl"}) {
