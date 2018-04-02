@@ -1576,8 +1576,12 @@ sub detectDate($)
     
     my $Source = $Profile->{"Versions"}{$V}{"Source"};
     my $Date = undef;
-    
-    if($V eq "current")
+
+    if (defined $Profile->{"Versions"}{$V}{"Date"})
+    {
+        $Date = $Profile->{"Versions"}{$V}{"Date"}
+    }
+    elsif($V eq "current")
     {
         if(defined $Profile->{"Git"})
         {
