@@ -117,7 +117,7 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
   "t|target=s" => \$In::Opt{"TargetElement"},
   "clear!" => \$In::Opt{"Clear"},
   "clean-unused!" => \$In::Opt{"CleanUnused"},
-  "force!" => \$In::Opt{"Force"},
+  "confirm|force!" => \$In::Opt{"Confirm"},
   "global-index!" => \$In::Opt{"GlobalIndex"},
   "disable-cache!" => \$In::Opt{"DisableCache"},
   "deploy=s" => \$In::Opt{"Deploy"},
@@ -191,6 +191,9 @@ GENERAL OPTIONS:
   
   -clear
       Remove all reports.
+  
+  -clean-unused
+      Remove unused reports and ABI dumps.
   
   -global-index
       Create list of all tested libraries.
@@ -465,8 +468,20 @@ sub cleanUnused()
         {
             printMsg("INFO", "Unused ABI dump v.$V");
             
-            if(defined $In::Opt{"Force"}) {
+            if(defined $In::Opt{"Confirm"}) {
                 rmtree("abi_dump/$TARGET_LIB/$V");
+            }
+        }
+    }
+    
+    foreach my $V (keys(%{$DB->{"Changelog"}}))
+    {
+        if(not defined $PoinVer{$V})
+        {
+            printMsg("INFO", "Unused changelog v.$V");
+            
+            if(defined $In::Opt{"Confirm"}) {
+                rmtree("changelog/$TARGET_LIB/$V");
             }
         }
     }
@@ -478,17 +493,49 @@ sub cleanUnused()
             if(not defined $SeqVer{$O_V}{$V})
             {
                 printMsg("INFO", "Unused ABI report from $O_V to $V");
-                if(defined $In::Opt{"Force"})
+                if(defined $In::Opt{"Confirm"})
                 {
-                    rmtree("objects_report/$TARGET_LIB/$O_V/$V");
-                    rmtree("compat_report/$TARGET_LIB/$O_V/$V");
+                    my $ObjectDir = "objects_report/$TARGET_LIB/$O_V";
+                    my $ReportDir = "compat_report/$TARGET_LIB/$O_V";
+                    
+                    rmtree($ObjectDir."/".$V);
+                    rmtree($ReportDir."/".$V);
+                    
+                    if(not listDir($ObjectDir)) {
+                        rmtree($ObjectDir);
+                    }
+                    
+                    if(not listDir($ReportDir)) {
+                        rmtree($ReportDir);
+                    }
                 }
             }
         }
     }
     
-    if(not defined $In::Opt{"Force"}) {
-        printMsg("INFO", "Use -force option to remove unused data");
+    foreach my $O_V (keys(%{$DB->{"HeadersDiff"}}))
+    {
+        foreach my $V (keys(%{$DB->{"HeadersDiff"}{$O_V}}))
+        {
+            if(not defined $SeqVer{$O_V}{$V})
+            {
+                printMsg("INFO", "Unused headers diff from $O_V to $V");
+                if(defined $In::Opt{"Confirm"})
+                {
+                    my $HDir = "headers_diff/$TARGET_LIB/$O_V";
+                    
+                    rmtree($HDir."/".$V);
+                    
+                    if(not listDir($HDir)) {
+                        rmtree($HDir);
+                    }
+                }
+            }
+        }
+    }
+    
+    if(not defined $In::Opt{"Confirm"}) {
+        printMsg("INFO", "Retry with -confirm option to remove files");
     }
 }
 
@@ -4363,9 +4410,8 @@ sub createGlobalIndex()
         
         if(-f "profile/$L.json")
         {
-            my $Pr = readProfile(readFile("profile/$L.json"));
-            if(defined $Pr->{"Title"}) {
-                $Title = $Pr->{"Title"};
+            if(readFile("profile/$L.json")=~/\"Title\":\s*\"([^\"]+?)\"/) {
+                $Title = $1;
             }
         }
         else
