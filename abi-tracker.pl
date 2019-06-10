@@ -3,7 +3,7 @@
 # ABI Tracker 1.11
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
-# Copyright (C) 2015-2018 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2019 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -757,7 +757,7 @@ sub countSymbolsF($$)
 {
     my ($Dump, $V) = @_;
     
-    if(defined $Dump->{"TotalSymbolsFiltered"})
+    if(defined $Dump->{"TotalSymbolsFiltered"} and $Dump->{"TotalSymbolsFiltered"})
     {
         if(not defined $In::Opt{"DisableCache"}) {
             return $Dump->{"TotalSymbolsFiltered"};
@@ -783,7 +783,7 @@ sub countSymbolsF($$)
         return ($Dump->{"TotalSymbolsFiltered"} = $Count);
     }
     
-    if(not defined $Dump->{"TotalSymbols"})
+    if(not defined $Dump->{"TotalSymbols"} or not $Dump->{"TotalSymbols"})
     { # support for old data
         print STDERR "WARNING: TotalSymbols property is missed, reading ABI dump for ".$Dump->{"Object"}." ($V) ...\n";
         $Dump->{"TotalSymbols"} = countSymbols($Dump);
@@ -847,6 +847,22 @@ sub simpleGraph($$$)
     
     my $Few = (defined $Profile->{"GraphFewXTics"} and $Profile->{"GraphFewXTics"} eq "On");
     
+    if(not defined $Profile->{"GraphShortXTics"} or $Profile->{"GraphShortXTics"} eq "Off")
+    {
+        if(($Vs[0]=~/_/ and length($Vs[0])>=5) or length($Vs[0])>=7) {
+            $Few = 1;
+        }
+        elsif(($Vs[$#Vs]=~/_/ and length($Vs[$#Vs])>=5) or length($Vs[$#Vs])>=7) {
+            $Few = 1;
+        }
+    }
+    
+    my $P0 = 0;
+    my $P1 = int($#Vs/4);
+    my $P2 = int($#Vs/2);
+    my $P3 = int(3*$#Vs/4);
+    my $P4 = $#Vs;
+    
     foreach (0 .. $#Vs)
     {
         my $V = $Vs[$_];
@@ -870,7 +886,7 @@ sub simpleGraph($$$)
         
         my $V_S = $V;
         
-        if(defined $Profile->{"GraphShortXTics"})
+        if(defined $Profile->{"GraphShortXTics"} and $Profile->{"GraphShortXTics"} eq "On")
         {
             if($V=~tr![\._\-]!!>=2) {
                 $V_S = getMajor($V, 2);
@@ -893,10 +909,9 @@ sub simpleGraph($$$)
         
         $Content .= $_."  ".$Val;
         
-        if($_==0 or $_==$#Vs
-        or $_==int($#Vs/2)
-        or (not $Few and $_==int($#Vs/4))
-        or (not $Few and $_==int(3*$#Vs/4))) {
+        if($_==$P0 or $_==$P2 or $_==$P4
+        or (not $Few and $_==$P1)
+        or (not $Few and $_==$P3)) {
             $Content .= "  ".$V_S;
         }
         $Content .= "\n";
@@ -924,6 +939,62 @@ sub simpleGraph($$$)
         $MaxRange += int($Delta/20);
     }
     
+    my $LegendDefault = undef;
+    
+    $Val_Pre = $StartVal;
+    my %Top = ();
+    
+    foreach my $X (0 .. $#Vs)
+    {
+        my $V = $Vs[$X];
+        my $Val = $Val_Pre + $Scatter->{$V};
+        
+        if(grep {$X eq $_} ($P0, $P1, $P2, $P3, $P4)) {
+            $Top{$X} = ($Val - $MinRange)/($MaxRange - $MinRange);
+        }
+        $Val_Pre = $Val;
+    }
+    
+    if($Top{$P0}<0.7 and $Top{$P1}<0.7 and $Top{$P2}<0.7) {
+        $LegendDefault = "LeftTop";
+    }
+    elsif($Top{$P2}<0.7 and $Top{$P3}<0.7 and $Top{$P4}<0.7) {
+        $LegendDefault = "RightTop";
+    }
+    elsif($Top{$P2}>=0.35 and $Top{$P3}>=0.35 and $Top{$P4}>=0.35) {
+        $LegendDefault = "RightBottom";
+    }
+    elsif($Top{$P0}>=0.35 and $Top{$P1}>=0.35 and $Top{$P2}>=0.35) {
+        $LegendDefault = "LeftBottom";
+    }
+    elsif($Top{$P1}<0.7 and $Top{$P2}<0.7 and $Top{$P3}<0.7) {
+        $LegendDefault = "CenterTop";
+    }
+    elsif($Top{$P1}>=0.35 and $Top{$P2}>=0.35 and $Top{$P3}>=0.35) {
+        $LegendDefault = "CenterBottom";
+    }
+    elsif($Top{$P0}<0.72 and $Top{$P1}<0.72) {
+        $LegendDefault = "LeftTop";
+    }
+    elsif($Top{$P3}<0.72 and $Top{$P4}<0.72) {
+        $LegendDefault = "RightTop";
+    }
+    elsif($Top{$P3}>=0.33 and $Top{$P4}>=0.33) {
+        $LegendDefault = "RightBottom";
+    }
+    elsif($Top{$P0}>=0.35 and $Top{$P1}>=0.35) {
+        $LegendDefault = "LeftBottom";
+    }
+    elsif($Top{$P2}<0.72) {
+        $LegendDefault = "CenterTop";
+    }
+    elsif($Top{$P2}>=0.33) {
+        $LegendDefault = "CenterBottom";
+    }
+    else {
+        $LegendDefault = "LeftTop";
+    }
+    
     my $Data = $TMP_DIR."/graph.data";
     
     writeFile($Data, $Content);
@@ -937,20 +1008,54 @@ sub simpleGraph($$$)
     $Title=~s/\'/''/g;
     
     my $Cmd = "gnuplot -e \"set title \'$GraphTitle\';";
-    $Cmd .= "set xlabel '".$Title." version';";
-    $Cmd .= "set ylabel 'ABI symbols';";
+    # $Cmd .= "set xlabel 'Pic. 1, ABI symbols';";
+    # $Cmd .= "set ylabel 'Symbols';";
+    
+    my ($Left, $Center, $Right, $Top, $Bottom) = (0.54, 0.8, 0.95, 0.9, 0.3);
+    
+    if($MaxRange>=10000) {
+        $Left = 0.61;
+    }
+    elsif($MaxRange>=1000) {
+        $Left = 0.58;
+    }
+    elsif($MaxRange>=100) {
+        $Left = 0.55;
+    }
+    
+    if(not $Profile->{"GraphLegendPos"}) {
+        $Profile->{"GraphLegendPos"} = $LegendDefault;
+    }
+    
+    if($Profile->{"GraphLegendPos"} eq "RightTop") {
+        $Cmd .= "set key at graph $Right,$Top;";
+    }
+    elsif($Profile->{"GraphLegendPos"} eq "CenterTop") {
+        $Cmd .= "set key at graph $Center,$Top;";
+    }
+    elsif($Profile->{"GraphLegendPos"} eq "RightBottom") {
+        $Cmd .= "set key at graph $Right,$Bottom;";
+    }
+    elsif($Profile->{"GraphLegendPos"} eq "CenterBottom") {
+        $Cmd .= "set key at graph $Center,$Bottom;";
+    }
+    elsif($Profile->{"GraphLegendPos"} eq "LeftBottom") {
+        $Cmd .= "set key at graph $Left,$Bottom;";
+    }
+    elsif($Profile->{"GraphLegendPos"} eq "LeftTop") {
+        $Cmd .= "set key at graph $Left,$Top;";
+    }
+    
+    $Cmd .= "set key font 'FreeSans, 11';";
     $Cmd .= "set xrange [0:".$#Vs."];";
     $Cmd .= "set yrange [$MinRange:$MaxRange];";
-    $Cmd .= "set terminal svg size 380,300;";
+    $Cmd .= "set terminal svg size 325,250;";
     $Cmd .= "set output \'$GraphPath\';";
-    $Cmd .= "set nokey;";
-    $Cmd .= "set xtics font 'Times, 12';";
-    $Cmd .= "set ytics font 'Times, 12';";
-    $Cmd .= "set xlabel font 'Times, 12';";
-    $Cmd .= "set ylabel font 'Times, 12';";
+    $Cmd .= "set xtics font 'FreeSans, 13';";
+    $Cmd .= "set ytics font 'FreeSans, 13';";
     $Cmd .= "set style line 1 linecolor rgbcolor 'red' linewidth 2;";
     $Cmd .= "set style increment user;";
-    $Cmd .= "plot \'$Data\' using 2:xticlabels(3) with lines\"";
+    $Cmd .= "plot \'$Data\' using 2:xticlabels(3) title 'ABI\nSymbols' with lines\"";
     
     system($Cmd);
     unlink($Data);
@@ -1446,6 +1551,7 @@ sub toHtml($$$)
     my $Desc = "Log of changes in the package";
     
     $Content = "\n<div class='changelog'>\n<pre class='wrap'>$Content</pre></div>\n";
+    $Content = "<!-- content -->\n".$Content."<!-- content end -->\n";
     
     if($V eq "current") {
         $Content = "<h1>Changelog from ".getScmInfo()."</h1><br/><br/>".$Content;
@@ -1873,6 +1979,12 @@ sub createABIDump($)
                 }
             }
         }
+        elsif($Profile->{"AllSymbols"} eq "On")
+        {
+            $Cmd .= " -all-symbols";
+            $Cmd .= " -all-types";
+            $Cmd .= " -dump-static";
+        }
         
         if($ABI_DUMPER_EE)
         {
@@ -2020,16 +2132,15 @@ sub createABIView($)
         return 0;
     }
     
-    if(not $ABI_DUMPER_EE)
-    {
-        printMsg("ERROR", "ABI Dumper EE is not installed");
-        return 0;
-    }
-    
     printMsg("INFO", "Creating ABI View for $V");
     
     if(not defined $DB->{"ABIDump"}{$V})
     {
+        if(not $ABI_DUMPER_EE)
+        {
+            printMsg("ERROR", "ABI Dumper EE is not installed");
+            return 0;
+        }
         createABIDump($V);
     }
     
@@ -2063,6 +2174,7 @@ sub createABIView($)
     $Report .= "<br/>\n";
     $Report .= "<br/>\n";
     
+    $Report .= "<!-- content -->\n";
     $Report .= "<table class='summary'>\n";
     $Report .= "<tr>";
     $Report .= "<th>Object</th>\n";
@@ -2093,6 +2205,7 @@ sub createABIView($)
         $Report .= "</tr>\n";
     }
     $Report .= "</table>\n";
+    $Report .= "<!-- content end -->\n";
     
     $Report .= getSign("Other");
     
@@ -2144,12 +2257,6 @@ sub createABIReport($$)
         if(not getToolVer($ABI_VIEWER))
         {
             printMsg("ERROR", "ABI Viewer is not installed");
-            return 0;
-        }
-        
-        if(not $ABI_DUMPER_EE)
-        {
-            printMsg("ERROR", "ABI Dumper EE is not installed");
             return 0;
         }
     }
@@ -2222,10 +2329,28 @@ sub createABIReport($$)
         delete($DB->{"ABIDump"}{$V2});
     }
     
-    if(not defined $DB->{"ABIDump"}{$V1}) {
+    if(not defined $DB->{"ABIDump"}{$V1})
+    {
+        if($ABIDiff eq "On")
+        {
+            if(not $ABI_DUMPER_EE)
+            {
+                printMsg("ERROR", "ABI Dumper EE is not installed");
+                return 0;
+            }
+        }
         createABIDump($V1);
     }
-    if(not defined $DB->{"ABIDump"}{$V2}) {
+    if(not defined $DB->{"ABIDump"}{$V2})
+    {
+        if($ABIDiff eq "On")
+        {
+            if(not $ABI_DUMPER_EE)
+            {
+                printMsg("ERROR", "ABI Dumper EE is not installed");
+                return 0;
+            }
+        }
         createABIDump($V2);
     }
     
@@ -2453,6 +2578,7 @@ sub createABIReport($$)
     $Report .= "<br/>\n";
     $Report .= "<br/>\n";
     
+    $Report .= "<!-- content -->\n";
     $Report .= "<table class='summary'>\n";
     $Report .= "<tr>";
     
@@ -2467,7 +2593,7 @@ sub createABIReport($$)
     
     $Report .= "<th$Rs>Object</th>\n";
     if($Profile->{"CompatRate"} ne "Off") {
-        $Report .= "<th$Cs>Backward<br/>Compatibility</th>\n";
+        $Report .= "<th$Cs>Backward<br/>Compat.</th>\n";
     }
     $Report .= "<th$Rs>Added<br/>Symbols</th>\n";
     $Report .= "<th$Rs>Removed<br/>Symbols</th>\n";
@@ -2694,6 +2820,7 @@ sub createABIReport($$)
         $Report .= "</tr>\n";
     }
     $Report .= "</table>\n";
+    $Report .= "<!-- content end -->\n";
     
     $Report .= getSign("Other");
     
@@ -2867,7 +2994,7 @@ sub createABIView_Object($$)
     
     if(not -d $DumpDir."/debug")
     {
-        printMsg("ERROR", "please rebuild ABI dumps");
+        printMsg("ERROR", "please rebuild ABI dumps by the ABI Dumper EE");
         return 1;
     }
     
@@ -3385,6 +3512,7 @@ sub diffHeaders($$)
     my $Keywords = showTitle().", header, diff";
     my $Desc = "Diff for header files between $V1 and $V2 versions of $TARGET_LIB";
     
+    $Diff = "<!-- content -->\n".$Diff."<!-- content end -->\n";
     $Diff .= "<br/>";
     $Diff .= "<div style='width:100%;' align='left' class='small'>$Link</div>\n";
     
@@ -3649,18 +3777,72 @@ sub createTimeline()
     }
     
     $Content .= "<h1>".$ContentHeader."</h1>\n";
-    $Content .= "<br/>";
-    $Content .= "<br/>";
     
     my $GraphPath = "graph/$TARGET_LIB/graph.svg";
     my $ShowGraph = (-f $GraphPath);
-    my $ShowSponsor = (defined $In::Opt{"Sponsors"});
+    my $ShowSponsor = (defined $In::Opt{"Sponsors"} and defined $LibrarySponsor{$TARGET_LIB});
     
-    my $RightSide = ($ShowGraph or $ShowSponsor);
+    $Content .= "<!-- content -->\n";
     
-    if($RightSide) {
-        $Content .= "<table cellpadding='0' cellspacing='0'><tr><td valign='top'>\n";
+    if($ShowGraph or $ShowSponsor)
+    {
+        if($ShowSponsor)
+        {
+            #if(not defined $LibrarySponsor{$TARGET_LIB})
+            #{
+            #    $Content .= "<div class='become_sponsor'>\n";
+            #    $Content .= "Become a <a href='https://abi-laboratory.pro/index.php?view=sponsor'>sponsor</a><br/>of this report";
+            #    $Content .= "</div>\n";
+            #}
+        }
+        
+        if($ShowGraph)
+        {
+            $Content .= "<p>\n";
+            $Content .= "<img src=\'../../$GraphPath?v=1.1\' alt='Timeline of ABI changes' />\n";
+            $Content .= "</p>\n";
+        }
+        
+        if($ShowSponsor)
+        {
+            my %Weight = (
+                "Bronze"  => 1,
+                "Silver"  => 2,
+                "Gold"    => 3,
+                "Diamond" => 4,
+                "Keystone" => 5
+            );
+            
+            my $Sponsors = $LibrarySponsor{$TARGET_LIB};
+            
+            $Content .= "<p>\n";
+            $Content .= "<div class='sponsor'>\n";
+            $Content .= "This report is<br/>supported by<p/>\n";
+            
+            foreach my $SName (sort {$Weight{$Sponsors->{$b}{"Status"}}<=>$Weight{$Sponsors->{$a}{"Status"}}} sort keys(%{$Sponsors}))
+            {
+                my $Sponsor = $Sponsors->{$SName};
+                my $Logo = $Sponsor->{"Logo"};
+                
+                $Content .= "<a href='".$Sponsor->{"Url"}."'>";
+                
+                if($Logo and -f $Logo) {
+                    $Content .= "<img src=\'../../$Logo\' alt='".$SName."' class='sponsor' />";
+                }
+                else {
+                    $Content .= $SName;
+                }
+                
+                $Content .= "</a>\n";
+            }
+            $Content .= "</div>\n";
+            $Content .= "</p>\n";
+        }
     }
+    #else
+    #{
+    #    $Content .= "<br/>\n";
+    #}
     
     my $Cs = "";
     my $Rs = "";
@@ -3670,7 +3852,7 @@ sub createTimeline()
         $Cs = " colspan='2'";
         $Rs = " rowspan='2'";
     }
-    
+    $Content .= "<p></p>\n";
     $Content .= "<table cellpadding='3' class='summary'>\n";
     
     $Content .= "<tr>\n";
@@ -3686,7 +3868,7 @@ sub createTimeline()
     }
     
     if($CompatRate ne "Off") {
-        $Content .= "<th$Cs>Backward<br/>Compatibility</th>\n";
+        $Content .= "<th$Cs>Backward<br/>Compat.</th>\n";
     }
     
     $Content .= "<th$Rs>Added<br/>Symbols</th>\n";
@@ -3700,7 +3882,7 @@ sub createTimeline()
     }
     
     if($PkgDiff ne "Off") {
-        $Content .= "<th$Rs>Package<br/>Diff</th>\n";
+        $Content .= "<th$Rs>Pkg<br/>Diff</th>\n";
     }
     
     if($ABIView ne "Off") {
@@ -4104,7 +4286,8 @@ sub createTimeline()
     
     $Content .= "</table>\n";
     
-    $Content .= "<br/>\n";
+    $Content .= "<p></p>\n";
+    
     if(defined $Profile->{"Maintainer"})
     {
         my $M = $Profile->{"Maintainer"};
@@ -4124,75 +4307,7 @@ sub createTimeline()
     $Content .= "<br/>\n";
     $Content .= "<br/>\n";
     $Content .= "Generated by <a href='https://github.com/lvc/abi-tracker'>ABI Tracker</a>, <a href='https://github.com/lvc/abi-compliance-checker'>ABICC</a> and <a href='https://github.com/lvc/abi-dumper'>ABI Dumper</a> tools.\n";
-    
-    if($RightSide)
-    {
-        $Content .= "</td>\n";
-        $Content .= "<td width='100%' valign='top' align='left' style='padding-left:2em;'>\n";
-        
-        if($ShowSponsor)
-        {
-            if(not defined $LibrarySponsor{$TARGET_LIB})
-            {
-                $Content .= "<div class='become_sponsor'>\n";
-                $Content .= "Become a <a href='https://abi-laboratory.pro/index.php?view=sponsor'>sponsor</a><br/>of this report";
-                $Content .= "</div>\n";
-            }
-            
-            $Content .= "<br/>\n";
-        }
-        
-        if($ShowGraph)
-        {
-            $Content .= "<img src=\'../../$GraphPath\' alt='Timeline of ABI changes' />\n";
-            $Content .= "<br/>\n";
-            $Content .= "<br/>\n";
-            $Content .= "<br/>\n";
-            $Content .= "<p/>\n";
-        }
-        
-        if($ShowSponsor)
-        {
-            my %Weight = (
-                "Bronze"  => 1,
-                "Silver"  => 2,
-                "Gold"    => 3,
-                "Diamond" => 4
-            );
-            if(defined $LibrarySponsor{$TARGET_LIB})
-            {
-                my $Sponsors = $LibrarySponsor{$TARGET_LIB};
-                
-                $Content .= "<div class='sponsor'>\n";
-                $Content .= "This report is<br/>supported by<p/>\n";
-                
-                foreach my $SName (sort {$Weight{$Sponsors->{$b}{"Status"}}<=>$Weight{$Sponsors->{$a}{"Status"}}} sort keys(%{$Sponsors}))
-                {
-                    my $Sponsor = $Sponsors->{$SName};
-                    my $Logo = $Sponsor->{"Logo"};
-                    
-                    $Content .= "<a href='".$Sponsor->{"Url"}."'>";
-                    
-                    if($Logo and -f $Logo) {
-                        $Content .= "<img src=\'../../$Logo\' alt='".$SName."' class='sponsor' />";
-                    }
-                    else {
-                        $Content .= $SName;
-                    }
-                    
-                    $Content .= "</a>\n";
-                    $Content .= "<p/>\n";
-                }
-                $Content .= "</div>\n";
-            }
-            
-            $Content .= "<br/>\n";
-        }
-        
-        $Content .= "</td>\n";
-        $Content .=  "</tr>\n";
-        $Content .= "</table>\n";
-    }
+    $Content .= "<!-- content end -->\n";
     
     $Content .= getSign("Home");
     
@@ -4356,16 +4471,17 @@ sub createGlobalIndex()
     writeJs();
     writeImages();
     
-    my $Title = "ABI Tracker: Maintained libraries";
-    my $Desc = "List of maintained libraries";
+    my $Title = "ABI Tracker: Tested libraries";
+    my $Desc = "List of tested libraries";
     my $Content = composeHTML_Head("global_index", $Title, "", $Desc, "report.css", "index.js");
     $Content .= "<body onload=\"applyFilter(document.getElementById('Filter'), 'List', 'Header', 'Note')\">\n";
     
     $Content .= getHead("global_index");
     
-    $Content .= "<h1>Maintained libraries (".($#Libs+1).")</h1>\n";
+    $Content .= "<h1>Tested libraries (".($#Libs+1).")</h1>\n";
     $Content .= "<br/>\n";
     
+    $Content .= "<!-- content -->\n";
     if($#Libs>=10)
     {
         my $E = "applyFilter(this, 'List', 'Header', 'Note')";
@@ -4436,6 +4552,9 @@ sub createGlobalIndex()
     foreach my $L (sort {lc($LibAttr{$a}{"Title"}) cmp lc($LibAttr{$b}{"Title"})} @Libs)
     {
         my $LUrl = "timeline/$L/index.html";
+        
+        $LUrl=~s/\+/\%2B/g;
+        
         $Content .= "<tr onclick=\"document.location=\'$LUrl\'\">\n";
         $Content .= "<td>".$LibAttr{$L}{"Title"}."</td>\n";
         $Content .= "<td><a href=\'$LUrl\'>review</a></td>\n";
@@ -4450,6 +4569,7 @@ sub createGlobalIndex()
     }
     
     $Content .= "</table>";
+    $Content .= "<!-- content end -->\n";
     
     $Content .= getSign("Other");
     $Content .= "</body></html>";
@@ -4846,7 +4966,7 @@ sub scenario()
     {
         if($In::Opt{"TargetElement"}!~/\A(date|dates|soname|changelog|abidump|abireport|rfcdiff|headersdiff|pkgdiff|packagediff|abiview|graph|objectsreport|compress)\Z/)
         {
-            exitStatus("Error", "the value of -target option should be one of the following: date, soname, changelog, abidump, abireport, rfcdiff, pkgdiff.");
+            exitStatus("Error", "the value of -target option should be one of the following: date, soname, changelog, abidump, abireport, rfcdiff, headersdiff, pkgdiff, abiview, graph, objectsreport.");
         }
     }
     
@@ -4898,7 +5018,7 @@ sub scenario()
         exitStatus("Module_Error", "cannot find \'$ABI_CC\'");
     }
     
-    my @Reports = ("timeline", "package_diff", "headers_diff", "changelog", "abi_dump", "objects_report", "objects_view", "compat_report", "abi_view", "graph");
+    my @Reports = ("timeline", "package_diff", "headers_diff", "changelog", "abi_dump", "objects_report", "objects_view", "compat_report", "abi_view", "graph", "rss");
     
     if(my $Profile_Path = $ARGV[0])
     {
