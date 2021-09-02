@@ -93,7 +93,7 @@ my $HomePage = "https://abi-laboratory.pro/";
 
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
-Copyright (C) 2018 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2019 Andrey Ponomarenko's ABI Laboratory
 License: GNU LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
@@ -319,6 +319,10 @@ sub readProfile($)
 {
     my $Content = $_[0];
     
+    if(not $Content) {
+        return undef;
+    }
+    
     my %Res = ();
     
     if($Content=~/\A\s*\{\s*((.|\n)+?)\s*\}\s*\Z/)
@@ -393,6 +397,10 @@ sub readProfile($)
             
             $Res{$K} = $V;
         }
+    }
+    
+    if(not $Res{"HideEmpty"}) {
+        $Res{"HideEmpty"} = "On";
     }
     
     return \%Res;
@@ -623,6 +631,9 @@ sub buildData()
             }
             
             compressABIDump($V);
+            compressABIReport_D($V);
+            compressABIReport($V);
+            compressChangelog($V);
         }
     }
     
@@ -698,11 +709,13 @@ sub buildData()
             if(my $UTime = getScmUpdateTime()) {
                 $DB->{"ScmUpdateTime"} = $UTime;
             }
+            if(my $ITime = getInstallTime()) {
+                $DB->{"InstallTime"} = $ITime;
+            }
         }
     }
     
-    if(defined $In::Opt{"TargetElement"}
-    and $In::Opt{"TargetElement"} eq "graph")
+    if(checkTarget("graph"))
     {
         my $First = $Versions[$#Versions];
         my $Total = 0;
@@ -771,7 +784,7 @@ sub countSymbolsF($$)
         my $Path = $Dump->{"Path"};
         printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\' ($V)");
         
-        my $Cmd_C = "$ABI_CC -count-symbols \"$Path\" $AccOpts";
+        my $Cmd_C = "$ABI_CC ".countOpt()." \"$Path\" $AccOpts";
         
         if($In::Opt{"Debug"}) {
             printMsg("DEBUG", "executing $Cmd_C");
@@ -803,6 +816,15 @@ sub countSymbolsF($$)
     return ($Dump->{"TotalSymbolsFiltered"} = $Dump->{"TotalSymbols"});
 }
 
+sub countOpt()
+{
+    if($Profile->{"PrivateABI"} eq "On") {
+        return "-count-all-symbols";
+    }
+    
+    return "-count-symbols";
+}
+
 sub countSymbols($)
 {
     my $Dump = $_[0];
@@ -810,7 +832,7 @@ sub countSymbols($)
     
     printMsg("INFO", "Counting symbols in the ABI dump for \'".getFilename($Dump->{"Object"})."\'");
     
-    my $Cmd_C = "$ABI_CC -count-symbols \"$Path\"";
+    my $Cmd_C = "$ABI_CC ".countOpt()." \"$Path\"";
     
     if($In::Opt{"Debug"}) {
         printMsg("DEBUG", "executing $Cmd_C");
@@ -1167,9 +1189,6 @@ sub detectSoname($)
         }
     }
     
-    delete($DB->{"Soname"}{$V}); # empty cache
-    delete($DB->{"Sover"}{$V}); # empty cache
-    
     printMsg("INFO", "Detecting soname of $V");
     
     my $Installed = $Profile->{"Versions"}{$V}{"Installed"};
@@ -1180,8 +1199,14 @@ sub detectSoname($)
     
     my @Objects = findObjects($Installed);
     
-    my %Sovers = ();
+    if(not @Objects) {
+        return 0;
+    }
     
+    delete($DB->{"Soname"}{$V});
+    delete($DB->{"Sover"}{$V});
+    
+    my %Sovers = ();
     foreach my $Path (@Objects)
     {
         my $RPath = $Path;
@@ -1224,8 +1249,7 @@ sub detectSoname($)
         if($#S==0) {
             $Sover = $S[0];
         }
-        else
-        {
+        else {
             $Sover = join("/", @S);
         }
     }
@@ -1365,6 +1389,14 @@ sub updateRequired($)
             if(my $UTime = getScmUpdateTime())
             {
                 if($DB->{"ScmUpdateTime"} ne $UTime)
+                {
+                    return 1;
+                }
+            }
+            
+            if(my $ITime = getInstallTime())
+            {
+                if($DB->{"InstallTime"} ne $ITime)
                 {
                     return 1;
                 }
@@ -1656,6 +1688,10 @@ sub getScmUpdateTime()
         {
             $Head = "$Source/.git/refs/heads/master";
             
+            if(defined $Profile->{"Branch"}) {
+                $Head = "$Source/.git/refs/heads/".$Profile->{"Branch"};
+            }
+            
             if(not -f $Head)
             { # is not updated yet
                 $Head = "$Source/.git/FETCH_HEAD";
@@ -1682,10 +1718,8 @@ sub getScmUpdateTime()
             }
         }
         
-        if($Head)
-        {
-            $Time = `stat -c \%Y \"$Head\"`;
-            chomp($Time);
+        if($Head) {
+            $Time = getAccessTime($Head);
         }
         
         if($Time) {
@@ -1694,6 +1728,25 @@ sub getScmUpdateTime()
     }
     
     return undef;
+}
+
+sub getInstallTime()
+{
+    if(my $Dir = $Profile->{"Versions"}{"current"}{"Installed"})
+    {
+        if(-d $Dir) {
+            return getAccessTime($Dir);
+        }
+    }
+    return undef;
+}
+
+sub getAccessTime($)
+{
+    my $Path = $_[0];
+    my $Time = `stat -c \%Y \"$Path\"`;
+    chomp($Time);
+    return $Time;
 }
 
 sub checkTarget($)
@@ -1802,8 +1855,7 @@ sub detectDate($)
         }
     }
     
-    if(defined $Date)
-    {
+    if($Date) {
         $DB->{"Date"}{$V} = $Date;
     }
 }
@@ -1870,6 +1922,120 @@ sub compressABIDump($)
     }
 }
 
+sub compressChangelog($)
+{
+    my $V = $_[0];
+    
+    my $ReportPath = $DB->{"Changelog"}{$V};
+    
+    if($ReportPath eq "Off" or not -e $ReportPath) {
+        return;
+    }
+    
+    if($ReportPath=~/\.\Q$COMPRESS\E\Z/) {
+        return;
+    }
+    
+    printMsg("INFO", "Compressing $ReportPath");
+    my $Dir = getDirname($ReportPath);
+    my $Name = getFilename($ReportPath);
+    my @Cmd_C = ("tar", "-C", $Dir, "-czf", $ReportPath.".".$COMPRESS, $Name);
+    system(@Cmd_C);
+    
+    if($?) {
+        exitStatus("Error", "Can't compress changelog");
+    }
+    else {
+        unlink($ReportPath);
+    }
+}
+
+sub compressABIReport_D($)
+{
+    my $V1 = $_[0];
+    
+    foreach my $V2 (keys(%{$DB->{"ABIReport_D"}{$V1}}))
+    {
+        foreach my $Md5 (keys(%{$DB->{"ABIReport_D"}{$V1}{$V2}}))
+        {
+            my $ReportPath = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Path"};
+            
+            if($ReportPath!~/\.\Q$COMPRESS\E\Z/ and -e $ReportPath)
+            {
+                printMsg("INFO", "Compressing $ReportPath");
+                my $Dir = getDirname($ReportPath);
+                my $Name = getFilename($ReportPath);
+                my @Cmd_C = ("tar", "-C", $Dir, "-czf", $ReportPath.".".$COMPRESS, $Name);
+                system(@Cmd_C);
+                
+                if($?) {
+                    exitStatus("Error", "Can't compress ABI report");
+                }
+                else
+                {
+                    unlink($ReportPath);
+                    
+                    $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Path"} = $ReportPath.".".$COMPRESS;
+                    $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"WWWPath"} = $ReportPath;
+                }
+            }
+            
+            my $SrcReportPath = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Source_ReportPath"};
+            
+            if($SrcReportPath!~/\.\Q$COMPRESS\E\Z/ and -e $SrcReportPath)
+            {
+                printMsg("INFO", "Compressing $SrcReportPath");
+                my $Dir = getDirname($SrcReportPath);
+                my $Name = getFilename($SrcReportPath);
+                my @Cmd_C = ("tar", "-C", $Dir, "-czf", $SrcReportPath.".".$COMPRESS, $Name);
+                system(@Cmd_C);
+                
+                if($?) {
+                    exitStatus("Error", "Can't compress ABI report");
+                }
+                else
+                {
+                    unlink($SrcReportPath);
+                    
+                    $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Source_ReportPath"} = $SrcReportPath.".".$COMPRESS;
+                    $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"WWWSource_ReportPath"} = $SrcReportPath;
+                }
+            }
+        }
+    }
+}
+
+sub compressABIReport($)
+{
+    my $V1 = $_[0];
+    
+    foreach my $V2 (keys(%{$DB->{"ABIReport"}{$V1}}))
+    {
+        my $ReportPath = $DB->{"ABIReport"}{$V1}{$V2}{"Path"};
+        
+        if($ReportPath=~/\.\Q$COMPRESS\E\Z/ or not -e $ReportPath) {
+            next;
+        }
+        
+        printMsg("INFO", "Compressing $ReportPath");
+        my $Dir = getDirname($ReportPath);
+        my $Name = getFilename($ReportPath);
+        my @Cmd_C = ("tar", "-C", $Dir, "-czf", $ReportPath.".".$COMPRESS, $Name);
+        system(@Cmd_C);
+        
+        if($?) {
+            exitStatus("Error", "Can't compress ABI objects report");
+        }
+        else
+        {
+            unlink($ReportPath);
+            
+            $DB->{"ABIReport"}{$V1}{$V2}{"Path"} = $ReportPath.".".$COMPRESS;
+            $DB->{"ABIReport"}{$V1}{$V2}{"WWWPath"} = $ReportPath;
+        }
+    }
+}
+
 sub createABIDump($)
 {
     my $V = $_[0];
@@ -1879,12 +2045,10 @@ sub createABIDump($)
         if(defined $DB->{"ABIDump"}{$V})
         {
             if(not updateRequired($V)) {
-                return 0;
+                return 1;
             }
         }
     }
-    
-    delete($DB->{"ABIDump"}{$V}); # empty cache
     
     printMsg("INFO", "Creating ABI dump for $V");
     
@@ -1896,17 +2060,19 @@ sub createABIDump($)
     
     my @Objects = findObjects($Installed);
     
+    if(not @Objects)
+    {
+        printMsg("ERROR", "can't find objects");
+        return 0;
+    }
+    
     my $Dir = "abi_dump/$TARGET_LIB/$V";
     
     if(-d $Dir) {
         rmtree($Dir);
     }
     
-    if(not @Objects)
-    {
-        printMsg("ERROR", "can't find objects");
-        return 1;
-    }
+    delete($DB->{"ABIDump"}{$V});
     
     my $TmpDir = $TMP_DIR."/objects";
     
@@ -2064,6 +2230,8 @@ sub createABIDump($)
     }
     
     $DoneDump{$V} = 1;
+    
+    return 1;
 }
 
 sub getObjectName($$)
@@ -2141,7 +2309,12 @@ sub createABIView($)
             printMsg("ERROR", "ABI Dumper EE is not installed");
             return 0;
         }
-        createABIDump($V);
+        
+        if(not createABIDump($V))
+        {
+            printMsg("ERROR", "Failed to generate ABI dump");
+            return 0;
+        }
     }
     
     my $D = $DB->{"ABIDump"}{$V};
@@ -2237,8 +2410,6 @@ sub createABIReport($$)
         }
     }
     
-    delete($DB->{"ABIReport"}{$V1}{$V2}); # empty cache
-    
     printMsg("INFO", "Creating objects ABI report between $V1 and $V2");
     
     my $Cols = 5;
@@ -2289,7 +2460,7 @@ sub createABIReport($$)
             {
                 if(not -e $IPath."/".$DB->{"ABIDump"}{$V2}{$Md}{"Object"})
                 {
-                    print STDERR "WARNING: It's necessary to regenerate ABI dump for $V2 (missed object)\n";
+                    print STDERR "WARNING: It's necessary to re-generate ABI dump for $V2 (missed object)\n";
                     delete($DB->{"ABIDump"}{$V2});
                     last;
                 }
@@ -2303,7 +2474,7 @@ sub createABIReport($$)
                     {
                         if(not defined $FailedDump{$V2}{$Obj})
                         {
-                            print STDERR "WARNING: It's necessary to regenerate ABI dump for $V2 (missed object dump)\n";
+                            print STDERR "WARNING: It's necessary to re-generate ABI dump for $V2 (missed object dump)\n";
                             delete($DB->{"ABIDump"}{$V2});
                             last;
                         }
@@ -2339,7 +2510,12 @@ sub createABIReport($$)
                 return 0;
             }
         }
-        createABIDump($V1);
+        
+        if(not createABIDump($V1))
+        {
+            printMsg("ERROR", "Failed to generate ABI dump for $V1");
+            return 0;
+        }
     }
     if(not defined $DB->{"ABIDump"}{$V2})
     {
@@ -2351,7 +2527,12 @@ sub createABIReport($$)
                 return 0;
             }
         }
-        createABIDump($V2);
+        
+        if(not createABIDump($V2))
+        {
+            printMsg("ERROR", "Failed to generate ABI dump for $V2");
+            return 0;
+        }
     }
     
     my $D1 = $DB->{"ABIDump"}{$V1};
@@ -2380,6 +2561,8 @@ sub createABIReport($$)
         }
         push(@Objects2, $Obj);
     }
+    
+    delete($DB->{"ABIReport"}{$V1}{$V2});
     
     if($Profile->{"Mode"} eq "Kernel")
     { # move vmlinux to the top of the report
@@ -2715,7 +2898,7 @@ sub createABIReport($$)
                         $Report .= formatNum($BC_D)."%";
                     }
                     else {
-                        $Report .= "<a href='../../../../".$ABIReport_D->{"Path"}."'>".formatNum($BC_D)."%</a>";
+                        $Report .= "<a href='../../../../".$ABIReport_D->{"WWWPath"}."'>".formatNum($BC_D)."%</a>";
                     }
                     $Report .= "</td>\n";
                     
@@ -2748,7 +2931,7 @@ sub createABIReport($$)
                                 $Report .= formatNum($BC_D_Source)."%";
                             }
                             else {
-                                $Report .= "<a href='../../../../".$ABIReport_D->{"Source_ReportPath"}."'>".formatNum($BC_D_Source)."%</a>";
+                                $Report .= "<a href='../../../../".$ABIReport_D->{"WWWSource_ReportPath"}."'>".formatNum($BC_D_Source)."%</a>";
                             }
                             $Report .= "</td>\n";
                         }
@@ -2760,14 +2943,14 @@ sub createABIReport($$)
                 }
                 
                 if($AddedSymbols) {
-                    $Report .= "<td class='added'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."#Added'>".$AddedSymbols.$LinkNew."</a></td>\n";
+                    $Report .= "<td class='added'><a$LinkClass href='../../../../".$ABIReport_D->{"WWWPath"}."#Added'>".$AddedSymbols.$LinkNew."</a></td>\n";
                 }
                 else {
                     $Report .= "<td class='ok'>0</td>\n";
                 }
                 
                 if($RemovedSymbols) {
-                    $Report .= "<td class='removed'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."#Removed'>".$RemovedSymbols.$LinkRemoved."</a></td>\n";
+                    $Report .= "<td class='removed'><a$LinkClass href='../../../../".$ABIReport_D->{"WWWPath"}."#Removed'>".$RemovedSymbols.$LinkRemoved."</a></td>\n";
                 }
                 else {
                     $Report .= "<td class='ok'>0</td>\n";
@@ -2776,7 +2959,7 @@ sub createABIReport($$)
                 if($Profile->{"ShowTotalProblems"} eq "On")
                 {
                     if($TotalProblems) {
-                        $Report .= "<td class=\'warning\'><a$LinkClass href='../../../../".$ABIReport_D->{"Path"}."'>$TotalProblems</a></td>\n";
+                        $Report .= "<td class=\'warning\'><a$LinkClass href='../../../../".$ABIReport_D->{"WWWPath"}."'>$TotalProblems</a></td>\n";
                     }
                     else {
                         $Report .= "<td class='ok'>0</td>\n";
@@ -2788,7 +2971,7 @@ sub createABIReport($$)
                             $Report .= "<td>N/A</td>\n";
                         }
                         elsif($TotalProblems_Source) {
-                            $Report .= "<td class=\'warning\'><a$LinkClass href='../../../../".$ABIReport_D->{"Source_ReportPath"}."'>$TotalProblems_Source</a></td>\n";
+                            $Report .= "<td class=\'warning\'><a$LinkClass href='../../../../".$ABIReport_D->{"WWWSource_ReportPath"}."'>$TotalProblems_Source</a></td>\n";
                         }
                         else {
                             $Report .= "<td class='ok'>0</td>\n";
@@ -2912,6 +3095,7 @@ sub createABIReport($$)
     }
     
     $DB->{"ABIReport"}{$V1}{$V2}{"Path"} = $Output;
+    $DB->{"ABIReport"}{$V1}{$V2}{"WWWPath"} = $Output;
     $DB->{"ABIReport"}{$V1}{$V2}{"BC"} = $BC;
     $DB->{"ABIReport"}{$V1}{$V2}{"Added"} = $AddedSymbols_T;
     $DB->{"ABIReport"}{$V1}{$V2}{"Removed"} = $RemovedSymbols_T;
@@ -3023,12 +3207,24 @@ sub diffABIs($$$$)
         }
     }
     
-    delete($DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5}); # empty cache
-    
     printMsg("INFO", "Creating ABI diff for $Obj1 ($V1) and $Obj2 ($V2)");
     
     my $Dump1 = $DB->{"ABIDump"}{$V1}{getMd5($Obj1)};
     my $Dump2 = $DB->{"ABIDump"}{$V2}{getMd5($Obj2)};
+    
+    if(not -e $Dump1->{"Path"})
+    {
+        printMsg("ERROR", "failed to find \'".$Dump1->{"Path"}."\'");
+        return 1;
+    }
+    
+    if(not -e $Dump2->{"Path"})
+    {
+        printMsg("ERROR", "failed to find \'".$Dump2->{"Path"}."\'");
+        return 1;
+    }
+    
+    delete($DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5});
     
     my $Dir = "abi_diff/$TARGET_LIB/$V1/$V2/$Md5";
     my $Output = $Dir."/symbols.html";
@@ -3057,8 +3253,6 @@ sub compareABIs($$$$)
         }
     }
     
-    delete($DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}); # empty cache
-    
     printMsg("INFO", "Creating ABICC report for $Obj1 ($V1) and $Obj2 ($V2)");
     
     my $TmpDir = $TMP_DIR."/abicc/";
@@ -3072,27 +3266,37 @@ sub compareABIs($$$$)
     
     if(not $Dump1_Meta->{"PublicABI"})
     { # support for old versions of ABI Tracker
-        printMsg("INFO", "It's necessary to re-generate ABI dump for $V1");
+        printMsg("WARNING", "It's necessary to re-generate ABI dump for $V1");
         
         if(not -d $Profile->{"Versions"}{$V1}{"Installed"}) {
             exitStatus("Error", "the version \'$V1\' is not installed");
         }
         
         $DB->{"ABIDump"}{$V1} = undef;
-        createABIDump($V1);
+        if(not createABIDump($V1))
+        {
+            printMsg("ERROR", "Failed to generate ABI dump for $V1");
+            return 0;
+        }
     }
     
     if(not $Dump2_Meta->{"PublicABI"})
     { # support for old versions of ABI Tracker
-        printMsg("INFO", "It's necessary to re-generate ABI dump for $V2");
+        printMsg("WARNING", "It's necessary to re-generate ABI dump for $V2");
         
         if(not -d $Profile->{"Versions"}{$V2}{"Installed"}) {
             exitStatus("Error", "the version \'$V2\' is not installed");
         }
         
         $DB->{"ABIDump"}{$V2} = undef;
-        createABIDump($V2);
+        if(not createABIDump($V2))
+        {
+            printMsg("ERROR", "Failed to generate ABI dump for $V2");
+            return 0;
+        }
     }
+    
+    delete($DB->{"ABIReport_D"}{$V1}{$V2}{$Md5});
     
     my $Dir = "compat_report/$TARGET_LIB/$V1/$V2/$Md5";
     my $Output = $Dir."/abi_compat_report.html";
@@ -3172,12 +3376,14 @@ sub compareABIs($$$$)
     $Meta{"Removed"} = $Removed;
     $Meta{"TotalProblems"} = $Total;
     $Meta{"Path"} = $BinReport;
+    $Meta{"WWWPath"} = $BinReport;
     
     if($Profile->{"SourceCompat"} eq "On")
     {
         $Meta{"Source_Affected"} = $Affected_Source;
         $Meta{"Source_TotalProblems"} = $Total_Source;
         $Meta{"Source_ReportPath"} = $SrcReport;
+        $Meta{"WWWSource_ReportPath"} = $SrcReport;
     }
     
     $Meta{"Object1"} = $Obj1;
@@ -3268,12 +3474,20 @@ sub createPkgdiff($$)
         }
     }
     
-    delete($DB->{"PackageDiff"}{$V1}{$V2}); # empty cache
-    
     printMsg("INFO", "Creating package diff for $V1 and $V2");
     
     my $Source1 = $Profile->{"Versions"}{$V1}{"Source"};
     my $Source2 = $Profile->{"Versions"}{$V2}{"Source"};
+    
+    if(not -e $Source1) {
+        return 1;
+    }
+    
+    if(not -e $Source2) {
+        return 1;
+    }
+    
+    delete($DB->{"PackageDiff"}{$V1}{$V2});
     
     my $Dir = "package_diff/$TARGET_LIB/$V1/$V2";
     my $Output = $Dir."/report.html";
@@ -3339,8 +3553,6 @@ sub diffHeaders($$)
         }
     }
     
-    delete($DB->{"HeadersDiff"}{$V1}{$V2}); # empty cache
-    
     printMsg("INFO", "Diff headers $V1 and $V2");
     
     if(not checkCmd($RFCDIFF))
@@ -3359,6 +3571,8 @@ sub diffHeaders($$)
     if(not -d $I_Dir2) {
         return 0;
     }
+    
+    delete($DB->{"HeadersDiff"}{$V1}{$V2});
     
     my @AllFiles1 = findFiles($I_Dir1, "f");
     my @AllFiles2 = findFiles($I_Dir2, "f");
@@ -3998,6 +4212,8 @@ sub createTimeline()
         {
             my $Chglog = $DB->{"Changelog"}{$V};
             
+            $Chglog=~s/\.tar\.gz//;
+            
             if($Chglog and $Chglog ne "Off"
             and $Profile->{"Versions"}{$V}{"Changelog"} ne "Off") {
                 $Content .= "<td><a href=\'../../".$Chglog."\'>changelog</a></td>\n";
@@ -4054,7 +4270,7 @@ sub createTimeline()
                     $CClass = "warning";
                 }
                 
-                my $BC_Summary = "<a href='../../".$ABIReport->{"Path"}."'>$BC%</a>";
+                my $BC_Summary = "<a href='../../".$ABIReport->{"WWWPath"}."'>$BC%</a>";
                 
                 if(@Note)
                 {
@@ -4082,7 +4298,7 @@ sub createTimeline()
                         $CClass_Source = "warning";
                     }
                     
-                    my $BC_Summary_Source = "<a href='../../".$ABIReport->{"Path"}."'>$BC_Source%</a>";
+                    my $BC_Summary_Source = "<a href='../../".$ABIReport->{"WWWPath"}."'>$BC_Source%</a>";
                     
                     if(not defined $BC_Source)
                     {
@@ -4116,7 +4332,7 @@ sub createTimeline()
         if(defined $ABIReport)
         {
             if(my $Added = $ABIReport->{"Added"}) {
-                $Content .= "<td class='added'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>".$Added.$LinkNew."</a></td>\n";
+                $Content .= "<td class='added'><a$LinkClass href='../../".$ABIReport->{"WWWPath"}."'>".$Added.$LinkNew."</a></td>\n";
             }
             else {
                 $Content .= "<td class='ok'>0</td>\n";
@@ -4129,7 +4345,7 @@ sub createTimeline()
         if(defined $ABIReport)
         {
             if(my $Removed = $ABIReport->{"Removed"}) {
-                $Content .= "<td class='removed'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>".$Removed.$LinkRemoved."</a></td>\n";
+                $Content .= "<td class='removed'><a$LinkClass href='../../".$ABIReport->{"WWWPath"}."'>".$Removed.$LinkRemoved."</a></td>\n";
             }
             else {
                 $Content .= "<td class='ok'>0</td>\n";
@@ -4144,7 +4360,7 @@ sub createTimeline()
             if(defined $ABIReport)
             {
                 if(my $TotalProblems = $ABIReport->{"TotalProblems"}) {
-                    $Content .= "<td class=\'warning\'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>$TotalProblems</a></td>\n";
+                    $Content .= "<td class=\'warning\'><a$LinkClass href='../../".$ABIReport->{"WWWPath"}."'>$TotalProblems</a></td>\n";
                 }
                 else {
                     $Content .= "<td class='ok'>0</td>\n";
@@ -4156,7 +4372,7 @@ sub createTimeline()
                         $Content .= "<td>N/A</td>\n";
                     }
                     elsif(my $TotalProblems_Source = $ABIReport->{"Source_TotalProblems"}) {
-                        $Content .= "<td class=\'warning\'><a$LinkClass href='../../".$ABIReport->{"Path"}."'>$TotalProblems_Source</a></td>\n";
+                        $Content .= "<td class=\'warning\'><a$LinkClass href='../../".$ABIReport->{"WWWPath"}."'>$TotalProblems_Source</a></td>\n";
                     }
                     else {
                         $Content .= "<td class='ok'>0</td>\n";
@@ -4629,11 +4845,20 @@ sub checkFiles()
     {
         foreach my $V2 (listDir($HDiffs."/".$V1))
         {
+            my $MetaPath = $HDiffs."/".$V1."/".$V2."/meta.json";
+            
             if(not defined $DB->{"HeadersDiff"}{$V1}{$V2})
             {
                 $DB->{"HeadersDiff"}{$V1}{$V2}{"Path"} = $HDiffs."/".$V1."/".$V2."/diff.html";
-                my $Meta = readProfile(readFile($HDiffs."/".$V1."/".$V2."/meta.json"));
+                
+                my $Meta = readProfile(readFile($MetaPath));
                 $DB->{"HeadersDiff"}{$V1}{$V2}{"Total"} = $Meta->{"Total"};
+            }
+            else
+            {
+                if(not -e $MetaPath) {
+                    genMeta($MetaPath, $DB->{"HeadersDiff"}{$V1}{$V2});
+                }
             }
         }
     }
@@ -4662,6 +4887,10 @@ sub checkFiles()
         if(not defined $DB->{"Changelog"}{$V})
         {
             $DB->{"Changelog"}{$V} = $Changelogs."/".$V."/log.html";
+            
+            if(-e $DB->{"Changelog"}{$V}.".".$COMPRESS) {
+                $DB->{"Changelog"}{$V} .= ".".$COMPRESS;
+            }
         }
     }
     
@@ -4670,10 +4899,11 @@ sub checkFiles()
     {
         foreach my $Md5 (listDir($Dumps."/".$V))
         {
+            my $Dir = $Dumps."/".$V."/".$Md5;
+            my $MetaPath = $Dir."/meta.json";
             if(not defined $DB->{"ABIDump"}{$V}{$Md5})
             {
                 my %Info = ();
-                my $Dir = $Dumps."/".$V."/".$Md5;
                 
                 $Info{"Path"} = $Dir."/ABI.dump";
                 
@@ -4681,13 +4911,23 @@ sub checkFiles()
                     $Info{"Path"} .= ".".$COMPRESS;
                 }
                 
-                my $Meta = readProfile(readFile($Dir."/meta.json"));
+                my $Meta = readProfile(readFile($MetaPath));
                 $Info{"Object"} = $Meta->{"Object"};
                 $Info{"Lang"} = $Meta->{"Lang"};
                 $Info{"TotalSymbols"} = $Meta->{"TotalSymbols"};
                 $Info{"Version"} = $Meta->{"Version"};
                 
+                if($Meta->{"PublicABI"}) {
+                    $Info{"PublicABI"} = $Meta->{"PublicABI"};
+                }
+                
                 $DB->{"ABIDump"}{$V}{$Md5} = \%Info;
+            }
+            else
+            {
+                if(not -e $MetaPath) {
+                    genMeta($MetaPath, $DB->{"ABIDump"}{$V}{$Md5});
+                }
             }
         }
     }
@@ -4699,14 +4939,20 @@ sub checkFiles()
         {
             foreach my $Md5 (listDir($ABIReports_D."/".$V1."/".$V2))
             {
+                my $Dir = $ABIReports_D."/".$V1."/".$V2."/".$Md5;
+                my $MetaPath = $Dir."/meta.json";
                 if(not defined $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5})
                 {
                     my %Info = ();
-                    my $Dir = $ABIReports_D."/".$V1."/".$V2."/".$Md5;
                     
                     $Info{"Path"} = $Dir."/abi_compat_report.html";
+                    $Info{"WWWPath"} = $Info{"Path"};
                     
-                    my $Meta = readProfile(readFile($Dir."/meta.json"));
+                    if(-e $Info{"Path"}.".".$COMPRESS) {
+                        $Info{"Path"} .= ".".$COMPRESS;
+                    }
+                    
+                    my $Meta = readProfile(readFile($MetaPath));
                     $Info{"Affected"} = $Meta->{"Affected"};
                     $Info{"Added"} = $Meta->{"Added"};
                     $Info{"Removed"} = $Meta->{"Removed"};
@@ -4717,12 +4963,43 @@ sub checkFiles()
                         $Info{"Source_Affected"} = $Meta->{"Source_Affected"};
                         $Info{"Source_TotalProblems"} = $Meta->{"Source_TotalProblems"};
                         $Info{"Source_ReportPath"} = $Meta->{"Source_ReportPath"};
+                        $Info{"WWWSource_ReportPath"} = $Info{"Source_ReportPath"};
+                        
+                        if(-e $Info{"Source_ReportPath"}.".".$COMPRESS) {
+                            $Info{"Source_ReportPath"} .= ".".$COMPRESS;
+                        }
                     }
                     
                     $Info{"Object1"} = $Meta->{"Object1"};
                     $Info{"Object2"} = $Meta->{"Object2"};
                     
                     $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5} = \%Info;
+                }
+                else
+                {
+                    my $Info = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5};
+                    if(not -e $MetaPath) {
+                        genMeta($MetaPath, $Info);
+                    }
+                    
+                    if($Profile->{"HideEmpty"})
+                    {
+                        if(not $Info->{"Added"} and not $Info->{"Removed"}
+                        and not $Info->{"TotalProblems"} and not $Info->{"Source_TotalProblems"})
+                        {
+                            if(-e $Info->{"Path"})
+                            {
+                                printMsg("INFO", "Removing ".$Info->{"Path"});
+                                unlink($Info->{"Path"});
+                            }
+                            
+                            if(-e $Info->{"Source_ReportPath"})
+                            {
+                                printMsg("INFO", "Removing ".$Info->{"Source_ReportPath"});
+                                unlink($Info->{"Source_ReportPath"});
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4733,14 +5010,21 @@ sub checkFiles()
     {
         foreach my $V2 (listDir($ABIReports."/".$V1))
         {
+            my $Dir = $ABIReports."/".$V1."/".$V2;
+            my $MetaPath = $Dir."/meta.json";
+            
             if(not defined $DB->{"ABIReport"}{$V1}{$V2})
             {
                 my %Info = ();
-                my $Dir = $ABIReports."/".$V1."/".$V2;
                 
                 $Info{"Path"} = $Dir."/report.html";
+                $Info{"WWWPath"} = $Info{"Path"};
                 
-                my $Meta = readProfile(readFile($Dir."/meta.json"));
+                if(-e $Info{"Path"}.".".$COMPRESS) {
+                    $Info{"Path"} .= ".".$COMPRESS;
+                }
+                
+                my $Meta = readProfile(readFile($MetaPath));
                 $Info{"BC"} = $Meta->{"BC"};
                 $Info{"Added"} = $Meta->{"Added"};
                 $Info{"Removed"} = $Meta->{"Removed"};
@@ -4757,6 +5041,12 @@ sub checkFiles()
                 $Info{"ChangedSoname"} = $Meta->{"ChangedSoname"};
                 
                 $DB->{"ABIReport"}{$V1}{$V2} = \%Info;
+            }
+            else
+            {
+                if(not -e $MetaPath) {
+                    genMeta($MetaPath, $DB->{"ABIReport"}{$V1}{$V2});
+                }
             }
         }
     }
@@ -4780,6 +5070,31 @@ sub checkFiles()
         {
             $DB->{"ABIView"}{$V}{"Path"} = $ABIViews."/".$V."/report.html";
         }
+    }
+}
+
+sub genMeta($$)
+{
+    my ($MetaPath, $Data) = @_;
+    
+    printMsg("INFO", "Generating metadata $MetaPath");
+    
+    my @Meta = ();
+    
+    foreach my $K (sort keys(%{$Data}))
+    {
+        my $Val = $Data->{$K};
+        
+        if($Val=~/\A\d+\Z/) {
+            push(@Meta, "\"$K\": $Val");
+        }
+        else {
+            push(@Meta, "\"$K\": \"".$Val."\"");
+        }
+    }
+    
+    if(@Meta) {
+        writeFile($MetaPath, "{\n  ".join(",\n  ", @Meta)."\n}");
     }
 }
 
@@ -4960,6 +5275,11 @@ sub scenario()
     
     if($In::Opt{"Rebuild"}) {
         $In::Opt{"Build"} = 1;
+    }
+    
+    if($In::Opt{"Build"} and not $In::Opt{"TargetElement"} and not $In::Opt{"TargetVersion"})
+    {
+        $In::Opt{"GenRss"} = 1;
     }
     
     if($In::Opt{"TargetElement"})
