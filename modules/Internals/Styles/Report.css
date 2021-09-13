@@ -1,8 +1,10 @@
 table.summary {
-    font-family:"DejaVu Sans Mono", "Monaco", monospace;
-    font-size:0.94em;
     border-collapse:collapse;
     table-layout:fixed;
+}
+table.summary td, table.summary th {
+    font-family:VeraMono, "DejaVu Sans Mono", "Monaco", monospace;
+    font-size:0.94em;
 }
 table.summary tr, table.summary td, table.summary th
 {
@@ -22,11 +24,7 @@ table.summary td {
     padding-bottom:20px;
     white-space:nowrap;
 }
-a.home {
-    font-size:1.2em;
-    text-decoration:none;
-}
-a.num {
+a.num:not(:hover) {
     color:#000000;
     text-decoration:none;
 }
@@ -86,4 +84,8 @@ table.summary th.sc {
 .highlight tr:hover {
     background-color:#E0E0E0;
     cursor:pointer;
+}
+.rss {
+    height:1.2em;
+    vertical-align:top;
 }

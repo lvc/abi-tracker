@@ -8,6 +8,7 @@
 
 .diff_tbl th {
     font-size: 16px;
+    text-align:center;
 }
 
 .small  { font-size: 0.6em; font-style: italic; font-family: Verdana, Helvetica, sans-serif; } 
