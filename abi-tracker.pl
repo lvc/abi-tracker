@@ -93,7 +93,7 @@ my $HomePage = "https://abi-laboratory.pro/";
 
 my $ShortUsage = "ABI Tracker $TOOL_VERSION
 A tool to visualize ABI changes timeline of a C/C++ software library
-Copyright (C) 2019 Andrey Ponomarenko's ABI Laboratory
+Copyright (C) 2021 Andrey Ponomarenko's ABI Laboratory
 License: GNU LGPLv2.1+
 
 Usage: $CmdName [options] [profile]
@@ -125,6 +125,7 @@ GetOptions("h|help!" => \$In::Opt{"Help"},
 # other options
   "json-report=s" => \$In::Opt{"JsonReport"},
   "regen-dump!" => \$In::Opt{"RegenDump"},
+  "compress!" => \$In::Opt{"Compress"},
   "rss!" => \$In::Opt{"GenRss"},
 # private options
   "sponsors=s" => \$In::Opt{"Sponsors"}
@@ -215,6 +216,9 @@ OTHER OPTIONS:
   -regen-dump
       Regenerate ABI dumps for previous versions if
       comparing with new ones.
+  
+  -compress
+      Generate compressed reports.
   
   -rss
       Generate RSS feed.
@@ -2092,7 +2096,7 @@ sub createABIDump($)
         my $ABIDir = $Dir."/".$Md5;
         my $ABIDump = $ABIDir."/ABI.dump";
         
-        if(not $Profile->{"NoCompress"}) {
+        if($Profile->{"Compress"} or $In::Opt{"Compress"}) {
             $ABIDump .= ".".$COMPRESS;
         }
         
