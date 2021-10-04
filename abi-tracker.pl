@@ -3,7 +3,7 @@
 # ABI Tracker 1.11
 # A tool to visualize ABI changes timeline of a C/C++ software library
 #
-# Copyright (C) 2015-2019 Andrey Ponomarenko's ABI Laboratory
+# Copyright (C) 2015-2021 Andrey Ponomarenko's ABI Laboratory
 #
 # Written by Andrey Ponomarenko
 #
@@ -1449,6 +1449,10 @@ sub createChangelog($$)
         return 0;
     }
     
+    if(-e $Dir) {
+        rmtree($Dir);
+    }
+    
     my $TmpDir = $TMP_DIR."/log";
     mkpath($TmpDir);
     
@@ -1906,8 +1910,9 @@ sub compressABIDump($)
     foreach my $Md5 (keys(%{$DB->{"ABIDump"}{$V}}))
     {
         my $DumpPath = $DB->{"ABIDump"}{$V}{$Md5}{"Path"};
+        $DumpPath=~s/\.\Q$COMPRESS\E\Z//;
         
-        if($DumpPath=~/\.\Q$COMPRESS\E\Z/) {
+        if(not -e $DumpPath) {
             next;
         }
         
@@ -1931,12 +1936,9 @@ sub compressChangelog($)
     my $V = $_[0];
     
     my $ReportPath = $DB->{"Changelog"}{$V};
+    $ReportPath=~s/\.\Q$COMPRESS\E\Z//;
     
     if($ReportPath eq "Off" or not -e $ReportPath) {
-        return;
-    }
-    
-    if($ReportPath=~/\.\Q$COMPRESS\E\Z/) {
         return;
     }
     
@@ -1963,8 +1965,9 @@ sub compressABIReport_D($)
         foreach my $Md5 (keys(%{$DB->{"ABIReport_D"}{$V1}{$V2}}))
         {
             my $ReportPath = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Path"};
+            $ReportPath=~s/\.\Q$COMPRESS\E\Z//;
             
-            if($ReportPath!~/\.\Q$COMPRESS\E\Z/ and -e $ReportPath)
+            if(-e $ReportPath)
             {
                 printMsg("INFO", "Compressing $ReportPath");
                 my $Dir = getDirname($ReportPath);
@@ -1985,8 +1988,9 @@ sub compressABIReport_D($)
             }
             
             my $SrcReportPath = $DB->{"ABIReport_D"}{$V1}{$V2}{$Md5}{"Source_ReportPath"};
+            $SrcReportPath=~s/\.\Q$COMPRESS\E\Z//;
             
-            if($SrcReportPath!~/\.\Q$COMPRESS\E\Z/ and -e $SrcReportPath)
+            if(-e $SrcReportPath)
             {
                 printMsg("INFO", "Compressing $SrcReportPath");
                 my $Dir = getDirname($SrcReportPath);
@@ -2016,8 +2020,9 @@ sub compressABIReport($)
     foreach my $V2 (keys(%{$DB->{"ABIReport"}{$V1}}))
     {
         my $ReportPath = $DB->{"ABIReport"}{$V1}{$V2}{"Path"};
+        $ReportPath=~s/\.\Q$COMPRESS\E\Z//;
         
-        if($ReportPath=~/\.\Q$COMPRESS\E\Z/ or not -e $ReportPath) {
+        if(not -e $ReportPath) {
             next;
         }
         
@@ -2114,7 +2119,7 @@ sub createABIDump($)
                 if($#Objects>0) {
                     $Cmd .= " -cache-headers \"$TmpDir\"";
                 }
-                if($Profile->{"UseTUDump"})
+                if($Profile->{"UseTUDump"} and $Profile->{"UseTUDump"} ne "Off")
                 {
                     $Cmd .= " -use-tu-dump";
                     
@@ -2733,6 +2738,8 @@ sub createABIReport($$)
         }
     }
     
+    my $ObjectsDir = "objects_report/$TARGET_LIB/$V1/$V2";
+    
     if(not $ObjectsReport)
     {
         if($In::Opt{"Rebuild"})
@@ -2754,6 +2761,16 @@ sub createABIReport($$)
             
             if($ABIDiff eq "On") {
                 diffABIs($V1, $V2, $Object1, $Mapped{$Object1});
+            }
+        }
+    }
+    else
+    {
+        if($In::Opt{"Rebuild"})
+        {
+            # Remove old objects reports
+            if(-d $ObjectsDir) {
+                rmtree($ObjectsDir);
             }
         }
     }
@@ -3017,8 +3034,7 @@ sub createABIReport($$)
     
     $Report = composeHTML_Head("objects_report", $Title, $Keywords, $Desc, "report.css")."\n<body>\n$Report\n</body>\n</html>\n";
     
-    my $Dir = "objects_report/$TARGET_LIB/$V1/$V2";
-    my $Output = $Dir."/report.html";
+    my $Output = $ObjectsDir."/report.html";
     
     writeFile($Output, $Report);
     
@@ -3139,7 +3155,7 @@ sub createABIReport($$)
     push(@Meta, "\"ChangedSoname\": ".keys(%ChangedSoname));
     push(@Meta, "\"TotalObjects\": ".($#Objects1 + 1));
     
-    writeFile($Dir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
+    writeFile($ObjectsDir."/meta.json", "{\n  ".join(",\n  ", @Meta)."\n}");
 }
 
 sub getMd5(@)
@@ -3240,6 +3256,16 @@ sub diffABIs($$$$)
     $DB->{"ABIDiff_D"}{$V1}{$V2}{$Md5}{"Path"} = $Output;
 }
 
+sub getDumpGccVer($)
+{
+    my $Path = $_[0];
+    if($Path=~/\Q$COMPRESS\E/) {
+        return `zcat $Path | grep -a GccVersion`;
+    }
+    
+    return `cat $Path | grep -a GccVersion`;
+}
+
 sub compareABIs($$$$)
 {
     my ($V1, $V2, $Obj1, $Obj2) = @_;
@@ -3265,10 +3291,33 @@ sub compareABIs($$$$)
     my $Dump1 = $DB->{"ABIDump"}{$V1}{getMd5($Obj1)};
     my $Dump2 = $DB->{"ABIDump"}{$V2}{getMd5($Obj2)};
     
+    if(not -e $Dump1->{"Path"} and -e $Dump1->{"Path"}.".".$COMPRESS) {
+        $Dump1->{"Path"} = $Dump1->{"Path"}.".".$COMPRESS;
+    }
+    
+    if(not -e $Dump2->{"Path"} and -e $Dump2->{"Path"}.".".$COMPRESS) {
+        $Dump2->{"Path"} = $Dump2->{"Path"}.".".$COMPRESS;
+    }
+    
+    if(not -e $Dump1->{"Path"})
+    {
+        printMsg("ERROR", "failed to find \'".$Dump1->{"Path"}."\'");
+        return 1;
+    }
+    
+    if(not -e $Dump2->{"Path"})
+    {
+        printMsg("ERROR", "failed to find \'".$Dump2->{"Path"}."\'");
+        return 1;
+    }
+    
     my $Dump1_Meta = readProfile(readFile(getDirname($Dump1->{"Path"})."/meta.json"));
     my $Dump2_Meta = readProfile(readFile(getDirname($Dump2->{"Path"})."/meta.json"));
     
-    if(not $Dump1_Meta->{"PublicABI"})
+    my $GccVer1 = getDumpGccVer($Dump1->{"Path"});
+    my $GccVer2 = getDumpGccVer($Dump2->{"Path"});
+    
+    if(not $Dump1_Meta->{"PublicABI"} or ($GccVer1 and $GccVer2 and $GccVer1 ne $GccVer2))
     { # support for old versions of ABI Tracker
         printMsg("WARNING", "It's necessary to re-generate ABI dump for $V1");
         
@@ -3495,7 +3544,10 @@ sub createPkgdiff($$)
     
     my $Dir = "package_diff/$TARGET_LIB/$V1/$V2";
     my $Output = $Dir."/report.html";
-    rmtree($Dir);
+    
+    if(-e $Dir) {
+        rmtree($Dir);
+    }
     
     my $Cmd = $PKGDIFF." -report-path \"$Output\" \"$Source1\" \"$Source2\"";
     my $Log = `$Cmd`; # execute
@@ -3741,13 +3793,16 @@ sub diffHeaders($$)
     
     $Diff = composeHTML_Head("headers_diff", $Title, $Keywords, $Desc, "headers_diff.css")."\n<body>\n$Diff\n</body>\n</html>\n";
     
-    my $Output = "headers_diff/$TARGET_LIB/$V1/$V2";
-    writeFile($Output."/diff.html", $Diff);
+    my $OutputDir = "headers_diff/$TARGET_LIB/$V1/$V2";
+    if(-e $OutputDir) {
+        rmtree($OutputDir);
+    }
+    writeFile($OutputDir."/diff.html", $Diff);
     
-    $DB->{"HeadersDiff"}{$V1}{$V2}{"Path"} = $Output."/diff.html";
+    $DB->{"HeadersDiff"}{$V1}{$V2}{"Path"} = $OutputDir."/diff.html";
     $DB->{"HeadersDiff"}{$V1}{$V2}{"Total"} = $Total;
     
-    writeFile($Output."/meta.json", "{\n  \"Total\": $Total\n}");
+    writeFile($OutputDir."/meta.json", "{\n  \"Total\": $Total\n}");
     
     rmtree($TmpDir);
 }
